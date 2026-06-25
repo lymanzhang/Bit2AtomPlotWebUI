@@ -1,0 +1,1743 @@
+/**
+ * Front-end for plotter app.
+ */
+
+import interpolator from "color-interpolate";
+import colormap from "colormap";
+import { flattenSVG, type Path } from "flatten-svg";
+import React, {
+  type ChangeEvent,
+  Fragment,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
+import { createRoot } from "react-dom/client";
+import { PaperSize } from "./paper-size";
+import { Device, defaultPlanOptions, type MotionData, Plan, type PlanOptions, XYMotion, computeStepsPerMm, computeMicrostepsPerMm, isBuiltinHardware, type SavedProfile } from "./planning.js";
+import useComponentSize from "./useComponentSize.js";
+import { formatDuration } from "./util.js";
+import { planToSvg } from "./export-svg.js";
+
+import "./style.css";
+import { type BaseDriver, type DeviceInfo, Bit2AtomDriver, WebSerialDriver } from "./drivers";
+import type { Hardware } from "./ebb";
+import pathJoinRadiusIcon from "./icons/path-joining radius.svg";
+import pointJoinRadiusIcon from "./icons/point-joining radius.svg";
+import rotateDrawingIcon from "./icons/rotate-drawing.svg";
+import bit2atomLogo from "./bit2atomLogo.svg";
+
+const defaultVisualizationOptions = {
+
+  penStrokeWidth: 0.5,
+  colorPathsByStrokeOrder: false,
+};
+
+const defaultSvgIoOptions = {
+  enabled: false,
+  prompt: "",
+  status: "",
+  vecType: "FLAT_VECTOR",
+};
+
+const initialState = {
+  connected: true,
+
+  paused: false,
+
+  deviceInfo: null as DeviceInfo | null,
+
+  // UI state
+  planOptions: defaultPlanOptions,
+  visualizationOptions: defaultVisualizationOptions,
+  svgIoOptions: defaultSvgIoOptions,
+
+  // Options used to produce the current value of |plan|.
+  plannedOptions: null as PlanOptions | null,
+
+  // Info about the currently-loaded SVG.
+  paths: null as Path[] | null,
+  groupLayers: [] as string[],
+  strokeLayers: [] as string[],
+
+  // While a plot is in progress, this will be the index of the current motion.
+  progress: null as number | null,
+  isSimulating: false,
+};
+
+// Update the initial state with previously persisted settings (if present)
+
+const persistedPlanOptions = JSON.parse(window.localStorage.getItem("planOptions") ?? "{}");
+initialState.planOptions = { ...initialState.planOptions, ...persistedPlanOptions };
+initialState.planOptions.paperSize = new PaperSize(initialState.planOptions.paperSize.size);
+
+type State = typeof initialState;
+
+type Action =
+  | { type: "SET_PLAN_OPTION"; value: Partial<State["planOptions"]> }
+  | { type: "SET_VISUALIZATION_OPTION"; value: Partial<State["visualizationOptions"]> }
+  | { type: "SET_SVGIO_OPTION"; value: Partial<State["svgIoOptions"]> }
+  | { type: "SET_DEVICE_INFO"; value: State["deviceInfo"] }
+  | { type: "SET_PAUSED"; value: boolean }
+  | { type: "SET_PROGRESS"; motionIdx: number | null }
+  | { type: "SET_CONNECTED"; connected: boolean }
+  | {
+      type: "SET_PATHS";
+      paths: State["paths"];
+      strokeLayers: State["strokeLayers"];
+      selectedStrokeLayers: State["planOptions"]["selectedStrokeLayers"];
+      groupLayers: State["groupLayers"];
+      selectedGroupLayers: State["planOptions"]["selectedGroupLayers"];
+      layerMode: State["planOptions"]["layerMode"];
+    }
+  | { type: "CLEAR_PATHS" };
+
+type Dispatcher = React.Dispatch<Action>;
+const nullDispatch: Dispatcher = () => null;
+const DispatchContext = React.createContext<Dispatcher>(nullDispatch);
+
+/**
+ * State machine reducer. Handle actions that update the state.
+ * @param state Previous state
+ * @param action Message
+ * @returns New state
+ */
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case "SET_PLAN_OPTION":
+      return { ...state, planOptions: { ...state.planOptions, ...action.value } };
+    case "SET_VISUALIZATION_OPTION":
+      return { ...state, visualizationOptions: { ...state.visualizationOptions, ...action.value } };
+    case "SET_SVGIO_OPTION":
+      return { ...state, svgIoOptions: { ...state.svgIoOptions, ...action.value } };
+    case "SET_DEVICE_INFO":
+      return { ...state, deviceInfo: action.value };
+    case "SET_PAUSED":
+      return { ...state, paused: action.value };
+    case "SET_PATHS": {
+      const { paths, strokeLayers, selectedStrokeLayers, groupLayers, selectedGroupLayers, layerMode } = action;
+      return {
+        ...state,
+        paths,
+        groupLayers,
+        strokeLayers,
+        planOptions: { ...state.planOptions, selectedStrokeLayers, selectedGroupLayers, layerMode },
+      };
+    }
+    case "CLEAR_PATHS":
+      return {
+        ...state,
+        paths: null,
+        groupLayers: [],
+        strokeLayers: [],
+        planOptions: {
+          ...state.planOptions,
+          selectedGroupLayers: new Set(),
+          selectedStrokeLayers: new Set(),
+          layerMode: "stroke",
+        },
+      };
+    case "SET_PROGRESS":
+      return { ...state, progress: action.motionIdx };
+    case "SET_SIMULATING":
+      return { ...state, isSimulating: action.value };
+    case "SET_CONNECTED":
+      return { ...state, connected: action.connected };
+    default:
+      console.warn(`Unrecognized action '${{ action }}'`);
+      return state;
+  }
+}
+
+// FIXME: This should probably be used for the WebWorker
+function serialize(po: PlanOptions): string {
+  return JSON.stringify(po, (_k, v) => (v instanceof Set ? [...v] : v));
+}
+
+function attemptRejigger(previousOptions: PlanOptions, newOptions: PlanOptions, previousPlan: Plan): Plan | null {
+  const newOptionsWithOldPenHeights = {
+    ...newOptions,
+    penUpHeight: previousOptions.penUpHeight,
+    penDownHeight: previousOptions.penDownHeight,
+  };
+  if (serialize(previousOptions) === serialize(newOptionsWithOldPenHeights)) {
+    const device = Device(newOptions.hardware);
+    // The existing plan should be the same except for penup/pendown heights.
+    return previousPlan.withPenHeights(
+      device.penPctToPos(newOptions.penUpHeight),
+      device.penPctToPos(newOptions.penDownHeight),
+    );
+  }
+  return null;
+}
+
+const usePlan = (paths: Path[] | null, planOptions: PlanOptions) => {
+  const [isPlanning, setIsPlanning] = useState(false);
+  const [latestPlan, setPlan] = useState<Plan | null>(null);
+
+  const lastPaths = useRef<Path[]>(null);
+  const lastPlan = useRef<Plan>(null);
+  const lastPlanOptions = useRef<PlanOptions>(null);
+
+  useEffect(() => {
+    if (!paths) {
+      return () => {};
+    }
+    if (lastPlan.current != null && lastPaths.current === paths) {
+      const rejiggered = attemptRejigger(lastPlanOptions.current ?? defaultPlanOptions, planOptions, lastPlan.current);
+      if (rejiggered) {
+        setPlan(rejiggered);
+        lastPlan.current = rejiggered;
+        lastPlanOptions.current = planOptions;
+        return () => {};
+      }
+    }
+    lastPaths.current = paths;
+    const worker = new Worker("background-planner.js");
+    setIsPlanning(true);
+    console.time("posting to worker");
+    // FIXME: planOptions contains Set objects which get converted to empty objects {}
+    // during structured cloning. Should use: { paths, planOptions: JSON.parse(serialize(planOptions)) }
+    worker.postMessage({ paths, planOptions });
+    console.timeEnd("posting to worker");
+    const listener = (m: Record<"data", MotionData[]>) => {
+      console.time("deserializing");
+      const deserialized = Plan.deserialize(m.data);
+      console.timeEnd("deserializing");
+      setPlan(deserialized);
+      lastPlan.current = deserialized;
+      lastPlanOptions.current = planOptions;
+      setIsPlanning(false);
+    };
+    worker.addEventListener("message", listener);
+    return () => {
+      worker.removeEventListener("message", listener);
+      worker.terminate();
+      setIsPlanning(false);
+    };
+  }, [paths, planOptions]);
+
+  return { isPlanning, plan: latestPlan, setPlan };
+};
+
+const setPaths = (paths: Path[]): Action => {
+  const strokes = new Set<string>();
+  const groups = new Set<string>();
+  for (const path of paths) {
+    strokes.add(path.stroke);
+    groups.add(path.groupId);
+  }
+  const layerMode = groups.size > 1 ? "group" : "stroke";
+  const groupLayers = Array.from(groups).sort();
+  const strokeLayers = Array.from(strokes).sort();
+  return {
+    type: "SET_PATHS",
+    paths,
+    groupLayers,
+    strokeLayers,
+    selectedGroupLayers: new Set(groupLayers),
+    selectedStrokeLayers: new Set(strokeLayers),
+    layerMode,
+  };
+};
+
+
+const CUSTOM_PROFILES_KEY = "bit2atombot.customProfiles";
+
+function loadSavedProfiles(): SavedProfile[] {
+  try { return JSON.parse(localStorage.getItem(CUSTOM_PROFILES_KEY) ?? "[]"); } catch { return []; }
+}
+function saveSavedProfiles(profiles: SavedProfile[]): void {
+  localStorage.setItem(CUSTOM_PROFILES_KEY, JSON.stringify(profiles));
+}
+
+function DriveParams({ state }: { state: State }) {
+  const dispatch = useContext(DispatchContext);
+  const dp = state.planOptions.driveParams;
+  const set = (partial: Partial<typeof dp>) =>
+    dispatch({ type: "SET_PLAN_OPTION", value: { driveParams: { ...dp, ...partial } } });
+  const stepsPerMm = computeStepsPerMm(dp);
+  const microstepsPerMm = computeMicrostepsPerMm(dp);
+  return (
+    <div>
+      <label title="此配置的名称，方便后续识别">
+        设备名称
+        <input type="text" value={dp.name}
+          onChange={(e) => { const v = e.target.value; set({ name: v }); }} />
+      </label>
+      <div className="flex">
+        <label title="步进电机每一步的转角">
+          步距角 (&deg;)
+          <input type="number" value={dp.stepAngle} step="0.1" min="0.1"
+            onChange={e => set({ stepAngle: Number(e.target.value) })} />
+        </label>
+        <label title="驱动器微步细分">
+          细分
+          <input type="number" value={dp.microstepping} step="1" min="1"
+            onChange={e => set({ microstepping: Number(e.target.value) })} />
+        </label>
+      </div>
+      <div className="flex">
+        <label title="同步轮齿数">
+          同步轮齿数
+          <input type="number" value={dp.pulleyTeeth} step="1" min="1"
+            onChange={e => set({ pulleyTeeth: Number(e.target.value) })} />
+        </label>
+        <label title="同步带齿距 (mm)">
+          齿距 (mm)
+          <input type="number" value={dp.beltPitch} step="0.1" min="0.1"
+            onChange={e => set({ beltPitch: Number(e.target.value) })} />
+        </label>
+      </div>
+      <div className="drive-params-result">
+        <div className="duration">
+          <div>stepsPerMm</div>
+          <div><strong>{stepsPerMm.toFixed(4)}</strong></div>
+        </div>
+        <div className="duration">
+          <div>微步值</div>
+          <div><strong>{microstepsPerMm.toFixed(4)}</strong></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PenHeight({ state, driver }: { state: State; driver: BaseDriver }) {
+  const { penUpHeight, penDownHeight, hardware } = state.planOptions;
+  const dispatch = useContext(DispatchContext);
+  const setPenUpHeight = (x: number) => dispatch({ type: "SET_PLAN_OPTION", value: { penUpHeight: x } });
+  const setPenDownHeight = (x: number) => dispatch({ type: "SET_PLAN_OPTION", value: { penDownHeight: x } });
+  const device = Device(hardware);
+
+  const penUp = () => {
+    const height = device.penPctToPos(penUpHeight);
+    driver.setPenHeight(height, 1000);
+  };
+  const penDown = () => {
+    const height = device.penPctToPos(penDownHeight);
+    driver.setPenHeight(height, 1000);
+  };
+  return (
+    <Fragment>
+      <div className="flex">
+        <label className="pen-label">
+          抬起高度 (%)
+          <input
+            type="number"
+            min="0"
+            max="100"
+            value={penUpHeight}
+            onChange={(e) => setPenUpHeight(parseInt(e.target.value, 10))}
+          />
+        </label>
+        <label className="pen-label">
+          落下高度 (%)
+          <input
+            type="number"
+            min="0"
+            max="100"
+            value={penDownHeight}
+            onChange={(e) => setPenDownHeight(parseInt(e.target.value, 10))}
+          />
+        </label>
+      </div>
+      <div className="flex">
+        <button type="button" onClick={penUp}>
+          抬笔
+        </button>
+        <button type="button" onClick={penDown}>
+          落笔
+        </button>
+      </div>
+    </Fragment>
+  );
+}
+
+function HardwareOptions({ state, driver }: { state: State; driver: BaseDriver | null }) {
+  const dispatch = useContext(DispatchContext);
+  const [savedProfiles, setSavedProfiles] = React.useState<SavedProfile[]>(() => loadSavedProfiles());
+  const refreshProfiles = () => setSavedProfiles(loadSavedProfiles());
+  const handleHardwareChange = (value: string) => {
+    if (!value) return;
+    if (value === "custom") {
+      dispatch({ type: "SET_PLAN_OPTION", value: { hardware: "custom" } });
+    } else if (!isBuiltinHardware(value)) {
+      const profiles = loadSavedProfiles();
+      const profile = profiles.find((p) => p.name === value);
+      if (profile) {
+        dispatch({ type: "SET_PLAN_OPTION", value: { hardware: value, driveParams: { ...profile.driveParams } } });
+      }
+    } else {
+      dispatch({ type: "SET_PLAN_OPTION", value: { hardware: value, driveParams: defaultPlanOptions.driveParams } });
+      try { driver?.changeHardware(value as Hardware); } catch (e) { console.warn('[Bit2AtomBot] HW change failed:', e); }
+    }
+  };
+  const currentHardware = state.planOptions.hardware;
+  const isCustomMode = !isBuiltinHardware(currentHardware);
+  const handleSave = () => {
+    const dp = state.planOptions.driveParams;
+    const name = dp.name.trim();
+    if (!name) { alert("请输入设备名称"); return; }
+    const profiles = loadSavedProfiles();
+    const idx = profiles.findIndex((p) => p.name === name);
+    if (idx >= 0) { profiles[idx].driveParams = dp; } else { profiles.push({ name, driveParams: dp }); }
+    saveSavedProfiles(profiles);
+    dispatch({ type: "SET_PLAN_OPTION", value: { hardware: name } });
+    refreshProfiles();
+  };
+  const handleDelete = () => {
+    const name = state.planOptions.driveParams.name.trim();
+    if (!name) return;
+    const profiles = loadSavedProfiles().filter((p) => p.name !== name);
+    saveSavedProfiles(profiles);
+    dispatch({ type: "SET_PLAN_OPTION", value: { hardware: "v3" } });
+    refreshProfiles();
+  };
+  return (
+    <div>
+      <label title="硬件型号（影响舵机和电机设置）">
+        硬件列表：
+        <select value={currentHardware}
+          onChange={(e) => handleHardwareChange(e.target.value)}
+          disabled={false}
+        >
+          <option value="v3">AxiDraw V3</option>
+          <option value="brushless">AxiDraw V3 Brushless</option>
+          <option value="nextdraw-2234">NextDraw 2234</option>
+          <option value="idraw-h-se">iDraw H SE</option>
+          {savedProfiles.map((p) => (
+            <option key={p.name} value={p.name}>{p.name}</option>
+          ))}
+          <option value="custom">── 新建自定义 ──</option>
+        </select>
+      </label>
+      {isCustomMode && (
+        <div>
+          <DriveParams state={state} />
+          <div className="flex" style={{ marginTop: "4px" }}>
+            <button type="button" onClick={handleSave}
+              disabled={!state.planOptions.driveParams.name.trim()}>
+              保存配置
+            </button>
+            {currentHardware !== "custom" && (
+              <button type="button" onClick={handleDelete}>
+                删除配置
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}function VisualizationOptions({ state }: { state: State }) {
+  const dispatch = useContext(DispatchContext);
+
+  return (
+    <>
+      <label title="预览中线条的宽度，不影响实际绘图。">
+        可视化笔触宽度 (mm)
+        <input
+          type="number"
+          value={state.visualizationOptions.penStrokeWidth}
+          min="0"
+          max="10"
+          step="0.1"
+          onChange={(e) =>
+            dispatch({ type: "SET_VISUALIZATION_OPTION", value: { penStrokeWidth: Number(e.target.value) } })
+          }
+        />
+      </label>
+      <label
+        className="flex-checkbox"
+        title="根据绘制顺序为路径着色。黄色最先，粉色最后。"
+      >
+        <input
+          type="checkbox"
+          checked={state.visualizationOptions.colorPathsByStrokeOrder}
+          onChange={(e) =>
+            dispatch({ type: "SET_VISUALIZATION_OPTION", value: { colorPathsByStrokeOrder: !!e.target.checked } })
+          }
+        />
+        按顺序着色
+      </label>
+    </>
+  );
+}
+
+function OriginOptions({ state }: { state: State }) {
+  const dispatch = useContext(DispatchContext);
+  const stepsPerMm = !isBuiltinHardware(state.planOptions.hardware)
+    ? computeStepsPerMm(state.planOptions.driveParams)
+    : Device(state.planOptions.hardware).stepsPerMm;
+  return (
+    <div className="flex">
+      <label title="绘图时笔的起始和结束位置 (x)">
+        起点 x (mm):
+        <input
+          type="number"
+          min="0"
+          max={state.planOptions.paperSize.size.x * stepsPerMm}
+          step="10"
+          value={state.planOptions.penHome.x}
+          onChange={(e) =>
+            dispatch({
+              type: "SET_PLAN_OPTION",
+              value: { penHome: { x: Number(e.target.value), y: state.planOptions.penHome.y } },
+            })
+          }
+        />
+      </label>
+      <label title="绘图时笔的起始和结束位置 (y)">
+        起点 y (mm):
+        <input
+          type="number"
+          min="0"
+          max={state.planOptions.paperSize.size.y * stepsPerMm}
+          step="10"
+          value={state.planOptions.penHome.y}
+          onChange={(e) =>
+            dispatch({
+              type: "SET_PLAN_OPTION",
+              value: { penHome: { x: state.planOptions.penHome.x, y: Number(e.target.value) } },
+            })
+          }
+        />
+      </label>
+    </div>
+  );
+}
+/**
+ * Options to get an AI-Generated SVG image.
+ * Use svg.io API: https://api.svg.io/v1/docs
+ */
+function SvgIoOptions({ state }: { state: State }) {
+  const { prompt, vecType, status } = state.svgIoOptions;
+  const dispatch = useContext(DispatchContext);
+  // call server
+  const generateImage = async () => {
+    dispatch({ type: "SET_SVGIO_OPTION", value: { status: "正在生成..." } });
+    try {
+      const resp = await fetch("/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: new Blob([JSON.stringify({ prompt, vecType })], { type: "application/json" }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        dispatch({ type: "SET_SVGIO_OPTION", value: { status: "正在加载..." } });
+        // retrieve image
+        const imgUrl = data.data[0].svgUrl;
+        const imgResp = await fetch(imgUrl);
+        const imgData = await imgResp.text();
+        // set image contents
+        dispatch(setPaths(readSvg(imgData)));
+      } else {
+        alert(`生成图像出错： ${data.message ? data.message : resp.statusText}`);
+      }
+    } catch (error) {
+      console.error(error);
+      alert(`Error generating image ${error}`);
+    } finally {
+      dispatch({ type: "SET_SVGIO_OPTION", value: { status: "" } });
+    }
+  };
+  return (
+    <>
+      <div>
+        <label>
+          类型
+          <select
+            value={vecType}
+            onChange={(e) => dispatch({ type: "SET_SVGIO_OPTION", value: { vecType: e.target.value } })}
+          >
+            <option value={"FLAT_VECTOR"}>扁平</option>
+            <option value={"FLAT_VECTOR_OUTLINE"}>轮廓</option>
+            <option value={"FLAT_VECTOR_SILHOUETTE"}>剪影</option>
+            <option value={"FLAT_VECTOR_ONE_LINE_ART"}>单线艺术</option>
+            <option value={"FLAT_VECTOR_LINE_ART"}>线条艺术</option>
+          </select>
+        </label>
+        <label title="prompt">
+          提示词
+          <textarea
+            value={prompt}
+            onChange={(e) => dispatch({ type: "SET_SVGIO_OPTION", value: { prompt: e.target.value } })}
+          />
+        </label>
+      </div>
+      {prompt !== "" ? (
+        <div>
+          {status ? (
+            <span>{status}</span>
+          ) : (
+            <button type="button" onClick={generateImage}>
+              Generate!
+            </button>
+          )}
+        </div>
+      ) : (
+        ""
+      )}
+    </>
+  );
+}
+
+function SwapPaperSizesButton({ onClick }: { onClick: () => void }) {
+  const handleKeyDown = (event: React.KeyboardEvent<SVGSVGElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault(); // Prevent scrolling with spacebar
+      onClick();
+    }
+  };
+  return (
+    <svg
+      className="paper-sizes__swap"
+      xmlns="http://www.w3.org/2000/svg"
+      width="14.05"
+      height="11.46"
+      viewBox="0 0 14.05 11.46"
+      onKeyDown={handleKeyDown}
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: no need for a div wrapper
+      tabIndex={0}
+      onClick={onClick}
+    >
+      <title>交换宽高</title>
+      <g>
+        <polygon points="14.05 3.04 8.79 0 8.79 1.78 1.38 1.78 1.38 4.29 8.79 4.29 8.79 6.08 14.05 3.04" />
+        <polygon points="0 8.43 5.26 11.46 5.26 9.68 12.67 9.68 12.67 7.17 5.26 7.17 5.26 5.39 0 8.43" />
+      </g>
+    </svg>
+  );
+}
+
+function PaperConfig({ state }: { state: State }) {
+  const dispatch = useContext(DispatchContext);
+  const landscape = state.planOptions.paperSize.isLandscape;
+  function setPaperSize(e: ChangeEvent) {
+    const name = (e.target as HTMLInputElement).value;
+    if (name !== "Custom") {
+      const ps = PaperSize.standard[name][landscape ? "landscape" : "portrait"];
+      dispatch({ type: "SET_PLAN_OPTION", value: { paperSize: ps } });
+    }
+  }
+  function setCustomPaperSize(x: number, y: number) {
+    dispatch({ type: "SET_PLAN_OPTION", value: { paperSize: new PaperSize({ x, y }) } });
+  }
+  const { paperSize } = state.planOptions;
+  const paperSizeName =
+    Object.keys(PaperSize.standard).find((psName) => {
+      const ps = PaperSize.standard[psName].size;
+      return (
+        (ps.x === paperSize.size.x && ps.y === paperSize.size.y) ||
+        (ps.y === paperSize.size.x && ps.x === paperSize.size.y)
+      );
+    }) || "Custom";
+  return (
+    <div>
+      <select value={paperSizeName} onChange={setPaperSize}>
+        {Object.keys(PaperSize.standard).map((name) => (
+          <option key={name}>{name}</option>
+        ))}
+        <option>自定义</option>
+      </select>
+      <div className="paper-sizes">
+        <label className="paper-label">
+          宽度 (mm)
+          <input
+            type="number"
+            value={paperSize.size.x}
+            onChange={(e) => setCustomPaperSize(Number(e.target.value), paperSize.size.y)}
+          />
+        </label>
+        <SwapPaperSizesButton
+          onClick={() => {
+            dispatch({
+              type: "SET_PLAN_OPTION",
+              value: { paperSize: paperSize.isLandscape ? paperSize.portrait : paperSize.landscape },
+            });
+          }}
+        />
+        <label className="paper-label">
+          高度 (mm)
+          <input
+            type="number"
+            value={paperSize.size.y}
+            onChange={(e) => setCustomPaperSize(paperSize.size.x, Number(e.target.value))}
+          />
+        </label>
+      </div>
+      <div>
+        <label>
+          旋转角度 (度)
+          <div className="horizontal-labels">
+            <img src={rotateDrawingIcon} alt="rotate drawing (degrees)" />
+            <input
+              type="number"
+              min="-90"
+              step="90"
+              max="360"
+              placeholder="0"
+              value={state.planOptions.rotateDrawing}
+              onInput={(e) => {
+                const value = (e.target as HTMLInputElement).value;
+                if (Number(value) < 0) {
+                  (e.target as HTMLInputElement).value = "270";
+                }
+                if (Number(value) > 270) {
+                  (e.target as HTMLInputElement).value = "0";
+                }
+              }}
+              onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { rotateDrawing: Number(e.target.value) } })}
+            />
+          </div>
+        </label>
+      </div>
+      <label>
+        边距 (mm)
+        <input
+          type="number"
+          value={state.planOptions.marginMm}
+          min="0"
+          max={Math.min(paperSize.size.x / 2, paperSize.size.y / 2)}
+          onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { marginMm: Number(e.target.value) } })}
+        />
+      </label>
+    </div>
+  );
+}
+
+function MotorControl({ driver }: { driver: BaseDriver }) {
+  return (
+    <div>
+      <button type="button" onClick={() => driver.limp()}>
+        关闭电机
+      </button>
+    </div>
+  );
+}
+
+function PlanStatistics({ plan, planOptions: po }: { plan: Plan | null; planOptions: PlanOptions }) {
+  const stepsPerMm = !isBuiltinHardware(po.hardware)
+    ? computeStepsPerMm(po.driveParams)
+    : Device(po.hardware).stepsPerMm;
+  const totalDist = plan != null ? plan.totalDistance(stepsPerMm) : 0;
+  const distStr = totalDist >= 1000
+    ? `${(totalDist / 1000).toFixed(1)} m`
+    : `${Math.round(totalDist)} mm`;
+  return (
+    <div className="plan-stats">
+      <div className="duration">
+        <div>总路径</div>
+        <div>
+          <strong>{plan ? distStr : "-"}</strong>
+        </div>
+      </div>
+      <div className="duration">
+        <div>预计时长</div>
+        <div>
+          <strong>{plan?.duration ? formatDuration(plan.duration()) : "-"}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TimeLeft({
+  plan,
+  progress,
+  currentMotionStartedTime,
+  paused,
+}: {
+  plan: Plan | null;
+  progress: number | null;
+  currentMotionStartedTime: Date;
+  paused: boolean;
+}) {
+  const [_, setTime] = useState(new Date());
+
+  // Interval that ticks every second to rerender
+  // and recalculate time remaining for long motions
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTime(new Date());
+    }, 1000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, []);
+
+  if (!plan?.duration || progress === null || paused) {
+    return null;
+  }
+
+  const currentMotionTimeSpent = (Date.now() - currentMotionStartedTime.getTime()) / 1000;
+  const duration = plan.duration(progress);
+  return (
+    <div className="duration">
+      <div className="time-remaining-label">剩余时间</div>
+      <div>
+        <strong>{formatDuration(duration - currentMotionTimeSpent)}</strong>
+      </div>
+    </div>
+  );
+}
+
+function PlanPreview({
+  state,
+  previewSize,
+  plan,
+}: {
+  state: State;
+  previewSize: { width: number; height: number };
+  plan: Plan | null;
+}) {
+  const ps = state.planOptions.paperSize;
+  const stepsPerMm = !isBuiltinHardware(state.planOptions.hardware)
+    ? computeStepsPerMm(state.planOptions.driveParams)
+    : Device(state.planOptions.hardware).stepsPerMm;
+  const strokeWidth = state.visualizationOptions.penStrokeWidth * stepsPerMm;
+  const colorPathsByStrokeOrder = state.visualizationOptions.colorPathsByStrokeOrder;
+  const memoizedPlanPreview = useMemo(() => {
+    if (plan) {
+      const palette = colorPathsByStrokeOrder
+        ? interpolator(colormap({ colormap: "spring" }))
+        : () => "rgba(0, 0, 0, 0.8)";
+      const lines = plan.motions
+        .filter((m) => m instanceof XYMotion)
+        .map((m) => m.blocks.map((b) => b.p1).concat([m.p2])) // Map each XYMotion to its start/end points
+        .filter((m) => m.length);
+      return (
+        <g transform={`scale(${1 / stepsPerMm})`}>
+          <title>Pen home</title>
+          <text x={lines[0][0].x} y={lines[0][0].y} fontSize="40" textAnchor="middle" dominantBaseline="middle">
+            ꚛ
+          </text>
+          {lines.map((line, i) => (
+            <path
+              // biome-ignore lint/suspicious/noArrayIndexKey: the paths are not changed elsewhere
+              key={i}
+              d={line.reduce((m, { x, y }, j) => `${m}${j === 0 ? "M" : "L"}${x} ${y}`, "")}
+              style={
+                i % 2 === 0
+                  ? { stroke: "rgba(0, 0, 0, 0.3)", strokeWidth: 0.5 }
+                  : { stroke: palette(1 - i / lines.length), strokeWidth }
+              }
+            />
+          ))}
+        </g>
+      );
+    }
+    return null;
+  }, [plan, strokeWidth, colorPathsByStrokeOrder, stepsPerMm]);
+
+  // w/h of svg.
+  // first try scaling so that h = area.h. if w < area.w, then ok.
+  // otherwise, scale so that w = area.w.
+  const { width, height } =
+    (ps.size.x / ps.size.y) * previewSize.height <= previewSize.width
+      ? { width: (ps.size.x / ps.size.y) * previewSize.height, height: previewSize.height }
+      : { height: (ps.size.y / ps.size.x) * previewSize.width, width: previewSize.width };
+
+  const [microprogress, setMicroprogress] = useState(0);
+  useLayoutEffect(() => {
+    let rafHandle: number;
+    let cancelled = false;
+    if (state.progress != null) {
+      const startingTime = Date.now();
+      const updateProgress = () => {
+        if (cancelled) {
+          return;
+        }
+        setMicroprogress(Date.now() - startingTime);
+        rafHandle = requestAnimationFrame(updateProgress);
+      };
+      updateProgress();
+    }
+    return () => {
+      cancelled = true;
+      if (rafHandle != null) {
+        cancelAnimationFrame(rafHandle);
+      }
+      setMicroprogress(0);
+    };
+  }, [state.progress]);
+
+  let progressIndicator = <></>;
+  if (state.progress != null && plan != null) {
+    const motion = plan.motion(state.progress);
+    const pos =
+      motion instanceof XYMotion
+        ? motion.instant(Math.min(microprogress / 1000, motion.duration())).p
+        : (plan.motion(state.progress - 1) as XYMotion).p2;
+    const posXMm = pos.x / stepsPerMm;
+    const posYMm = pos.y / stepsPerMm;
+    progressIndicator = (
+      <svg
+        width={width * 2}
+        height={height * 2}
+        viewBox={`${-width} ${-height} ${width * 2} ${height * 2}`}
+        style={{
+          transform:
+            "translateZ(0.001px) " +
+            `translate(${-width}px, ${-height}px) ` +
+            `translate(${(posXMm / ps.size.x) * 50}%,${(posYMm / ps.size.y) * 50}%)`,
+        }}
+      >
+        <title>Progress percentage bar</title>
+        <g>
+          <path
+            d={`M-${width} 0l${width * 2} 0M0 -${height}l0 ${height * 2}`}
+            style={{ stroke: "rgba(222, 114, 114, 0.6)", strokeWidth: 1 }}
+          />
+          <path d="M-10 0l20 0M0 -10l0 20" style={{ stroke: "rgba(222, 114, 114, 1)", strokeWidth: 2 }} />
+        </g>
+      </svg>
+    );
+  }
+  const margins = (
+    <g>
+      <rect
+        x={state.planOptions.marginMm}
+        y={state.planOptions.marginMm}
+        width={ps.size.x - state.planOptions.marginMm * 2}
+        height={ps.size.y - state.planOptions.marginMm * 2}
+        fill="none"
+        stroke="black"
+        strokeWidth="0.1"
+        strokeDasharray="1,1"
+      />
+    </g>
+  );
+  const marginMm = state.planOptions.marginMm;
+  const drawW = ps.size.x - marginMm * 2;
+  const drawH = ps.size.y - marginMm * 2;
+  const gridDefs = (
+    <defs>
+      <pattern id="grid5mm" width={5} height={5} patternUnits="userSpaceOnUse">
+        <path d="M 5 0 L 0 0 0 5" fill="none" stroke="#e4e4e4" strokeWidth="0.05" />
+      </pattern>
+      <pattern id="grid10mm" width={10} height={10} patternUnits="userSpaceOnUse">
+        <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#cdcdcd" strokeWidth="0.13" />
+      </pattern>
+    </defs>
+  );
+  const gridRects = (
+    <g>
+      <rect x={marginMm} y={marginMm} width={drawW} height={drawH} fill="url(#grid10mm)" />
+      <rect x={marginMm} y={marginMm} width={drawW} height={drawH} fill="url(#grid5mm)" />
+    </g>
+  );
+  const rulerMarks = useMemo(() => {
+    const ticks = [];
+    const maxDim = Math.max(drawW, drawH);
+    for (let mm = 0; mm <= maxDim; mm += 5) {
+      const is10 = mm % 10 === 0;
+      const is50 = mm % 50 === 0;
+      const tickLen = is50 ? 9 : is10 ? 6 : 3;
+      if (mm <= drawW) {
+        ticks.push(<line key={`rt-${mm}`} x1={marginMm + mm} y1={marginMm} x2={marginMm + mm} y2={marginMm - tickLen} stroke="#bbb" strokeWidth={is10 ? 0.15 : 0.08} />);
+        if (is10) ticks.push(<text key={`rtl-${mm}`} x={marginMm + mm} y={marginMm - tickLen - 0.8} fontSize="2.2" textAnchor="middle" fill="#999">{`${mm}`}</text>);
+      }
+      if (mm <= drawW) {
+        ticks.push(<line key={`rb-${mm}`} x1={marginMm + mm} y1={marginMm + drawH} x2={marginMm + mm} y2={marginMm + drawH + tickLen} stroke="#bbb" strokeWidth={is10 ? 0.15 : 0.08} />);
+        if (is10) ticks.push(<text key={`rbl-${mm}`} x={marginMm + mm} y={marginMm + drawH + tickLen + 1.8} fontSize="2.2" textAnchor="middle" fill="#999">{`${mm}`}</text>);
+      }
+      if (mm <= drawH) {
+        ticks.push(<line key={`rl-${mm}`} x1={marginMm} y1={marginMm + mm} x2={marginMm - tickLen} y2={marginMm + mm} stroke="#bbb" strokeWidth={is10 ? 0.15 : 0.08} />);
+        if (is10) ticks.push(<text key={`rll-${mm}`} x={marginMm - tickLen - 0.8} y={marginMm + mm + 0.7} fontSize="2.2" textAnchor="end" fill="#999">{`${mm}`}</text>);
+      }
+      if (mm <= drawH) {
+        ticks.push(<line key={`rr-${mm}`} x1={marginMm + drawW} y1={marginMm + mm} x2={marginMm + drawW + tickLen} y2={marginMm + mm} stroke="#bbb" strokeWidth={is10 ? 0.15 : 0.08} />);
+        if (is10) ticks.push(<text key={`rrl-${mm}`} x={marginMm + drawW + tickLen + 0.8} y={marginMm + mm + 0.7} fontSize="2.2" textAnchor="start" fill="#999">{`${mm}`}</text>);
+      }
+    }
+    return ticks;
+  }, [marginMm, drawW, drawH]);
+  return (
+    <div className="preview">
+      <svg width={width} height={height} viewBox={`0 0 ${ps.size.x} ${ps.size.y}`}>
+        <title>Plot preview</title>
+        {gridDefs}
+        {gridRects}
+        {rulerMarks}
+        {memoizedPlanPreview}
+        {margins}
+      </svg>
+      {progressIndicator}
+    </div>
+  );
+}
+
+function PlanLoader({ isLoadingFile, isPlanning }: { isLoadingFile: boolean; isPlanning: boolean }) {
+  if (isLoadingFile || isPlanning) {
+    return <div className="preview-loader">{isLoadingFile ? "加载文件中..." : "重新规划中..."}</div>;
+  }
+
+  return null;
+}
+
+function LayerSelector({ state }: { state: State }) {
+  const dispatch = useContext(DispatchContext);
+
+  const { layerMode } = state.planOptions;
+  const layers = layerMode === "group" ? state.groupLayers : state.strokeLayers;
+  if (layers.length <= 1) {
+    return null;
+  }
+
+  const selectedLayers =
+    layerMode === "group" ? state.planOptions.selectedGroupLayers : state.planOptions.selectedStrokeLayers;
+  const layersChanged = (e: ChangeEvent<HTMLSelectElement>) => {
+    const selectedLayers = new Set([...e.target.selectedOptions].map((o) => o.value));
+    if (layerMode === "group") {
+      dispatch({ type: "SET_PLAN_OPTION", value: { selectedGroupLayers: selectedLayers } });
+    } else {
+      dispatch({ type: "SET_PLAN_OPTION", value: { selectedStrokeLayers: selectedLayers } });
+    }
+  };
+  return (
+    <div>
+      <label>
+        图层
+        <select
+          className="layer-select"
+          multiple={true}
+          value={[...selectedLayers]}
+          onChange={layersChanged}
+          size={3}
+          disabled={state.progress != null}
+        >
+          {layers.map((layer) => (
+            <option key={layer}>{layer}</option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+}
+
+function PlotButtons({
+  state,
+  plan,
+  isPlanning,
+  driver,
+}: {
+  state: State;
+  plan: Plan | null;
+  isPlanning: boolean;
+  driver: BaseDriver;
+}) {
+  function cancel() {
+    driver.cancel();
+  }
+  function pause() {
+    driver.pause();
+  }
+  function resume() {
+    driver.resume();
+  }
+  function plot(plan: Plan) { driver.plot(plan); }
+
+  const dispatch = useContext(DispatchContext);
+  const simRef = React.useRef<{ timer: number | null; cancelled: boolean }>({ timer: null, cancelled: false });
+  const simulate = React.useCallback((simPlan: Plan) => {
+    const motions = simPlan.motions;
+    let idx = 0;
+    simRef.current.cancelled = false;
+    dispatch({ type: "SET_SIMULATING", value: true });
+    const advance = () => {
+      if (simRef.current.cancelled || idx >= motions.length) {
+        dispatch({ type: "SET_PROGRESS", motionIdx: null });
+        dispatch({ type: "SET_SIMULATING", value: false });
+        return;
+      }
+    const curMotion = motions[idx];
+      dispatch({ type: "SET_PROGRESS", motionIdx: idx });
+      idx++;
+      simRef.current.timer = window.setTimeout(advance, Math.max(16, (curMotion instanceof XYMotion ? curMotion.duration() : 0.05) * 1000));
+    };
+    advance();
+  }, [dispatch]);
+  const stopSimulate = React.useCallback(() => {
+    simRef.current.cancelled = true;
+    if (simRef.current.timer != null) { clearTimeout(simRef.current.timer); simRef.current.timer = null; }
+    dispatch({ type: "SET_PROGRESS", motionIdx: null });
+    dispatch({ type: "SET_SIMULATING", value: false });
+  }, [dispatch]);
+  React.useEffect(() => {
+    return () => {
+      simRef.current.cancelled = true;
+      if (simRef.current.timer != null) { clearTimeout(simRef.current.timer); }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      simRef.current.cancelled = true;
+      if (simRef.current.timer != null) { clearTimeout(simRef.current.timer); }
+    };
+  }, []);
+  const totalSteps = plan?.motions?.length ?? 1;
+  const pct = state.progress != null
+    ? Math.min(Math.round((state.progress + 1) / totalSteps * 100), 100)
+    : 0;
+
+  return (
+    <div>
+      {state.progress != null && plan && (
+        <div className="progress-bar-wrap">
+          <div className="progress-bar">
+            <div className="progress-bar-fill" style={{ width: pct + "%" }} />
+          </div>
+          <span className="progress-bar-label">{pct}%</span>
+        </div>
+      )}
+      <div className="button-row">
+        {!state.isSimulating ? (
+          <button
+            type="button"
+            onClick={() => plan && simulate(plan)}
+            disabled={plan == null || state.progress != null || state.isSimulating}
+          >
+            模拟绘制
+          </button>
+        ) : (
+          <button type="button" onClick={stopSimulate}>
+            停止模拟
+          </button>
+        )}
+      </div>
+      {isPlanning ? (
+        <button type="button" className="replan-button" disabled={true}>
+          Replanning...
+        </button>
+      ) : (
+        <button
+          type="button"
+          className={`plot-button ${state.progress != null ? "plot-button--plotting" : ""}`}
+          disabled={plan == null || state.progress != null}
+          onClick={() => plan && plot(plan)}
+        >
+          {plan && state.progress != null ? "绘制中..." : "开始绘制"}
+        </button>
+      )}
+      <div className={"button-row"}>
+        <button
+          type="button"
+          className={`cancel-button ${state.progress != null ? "cancel-button--active" : ""}`}
+          onClick={state.paused ? resume : pause}
+          disabled={plan == null || state.progress == null}
+        >
+          {state.paused ? "继续" : "暂停"}
+        </button>
+        <button
+          type="button"
+          className={`cancel-button ${state.progress != null ? "cancel-button--active" : ""}`}
+          onClick={cancel}
+          disabled={plan == null || state.progress == null}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ResetToDefaultsButton() {
+  const dispatch = useContext(DispatchContext);
+  const onClick = () => {
+    // Clear all user settings that have been saved and reset to the defaults
+    window.localStorage.removeItem("planOptions");
+    dispatch({ type: "SET_PLAN_OPTION", value: { ...defaultPlanOptions } });
+  };
+
+  return (
+    <button type="reset" className="button-link" onClick={onClick}>
+      重置所有选项
+    </button>
+  );
+}
+
+function PlanConfig({ state }: { state: State }) {
+  const dispatch = useContext(DispatchContext);
+  return (
+    <div>
+      <form>
+        <label className="flex-checkbox" title="重新排序路径以最小化抬笔移动时间">
+          <input
+            type="checkbox"
+            checked={state.planOptions.sortPaths}
+            onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { sortPaths: !!e.target.checked } })}
+          />
+          路径排序
+        </label>
+        <label className="flex-checkbox" title="按组ID分图层，而非按笔画颜色">
+          <input
+            type="checkbox"
+            checked={state.planOptions.layerMode === "group"}
+            onChange={(e) =>
+              dispatch({ type: "SET_PLAN_OPTION", value: { layerMode: e.target.checked ? "group" : "stroke" } })
+            }
+          />
+          按组分图层
+        </label>
+        <label className="flex-checkbox" title="缩放并定位图像以适配页面">
+          <input
+            type="checkbox"
+            checked={state.planOptions.fitPage}
+            onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { fitPage: !!e.target.checked } })}
+          />
+          适配页面
+        </label>
+        {!state.planOptions.fitPage ? (
+          <label className="flex-checkbox" title="移除超出边距的线条">
+            <input
+              type="checkbox"
+              checked={state.planOptions.cropToMargins}
+              onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { cropToMargins: !!e.target.checked } })}
+            />
+            裁剪至边距
+          </label>
+        ) : null}
+          <label className="flex-checkbox">
+            <input type="checkbox" checked={state.planOptions.hiding} onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { hiding: !!e.target.checked } })} />
+            隐藏线去除
+          </label>
+      </form>
+      <div className="horizontal-labels">
+        <label title="point-joining radius (mm)">
+          <img src={pointJoinRadiusIcon} alt="point-joining radius (mm)" />
+          <input
+            type="number"
+            value={state.planOptions.pointJoinRadius}
+            step="0.1"
+            min="0"
+            onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { pointJoinRadius: Number(e.target.value) } })}
+          />
+        </label>
+        <label title="path-joining radius (mm)">
+          <img src={pathJoinRadiusIcon} alt="path-joining radius (mm)" />
+          <input
+            type="number"
+            value={state.planOptions.pathJoinRadius}
+            step="0.1"
+            min="0"
+            onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { pathJoinRadius: Number(e.target.value) } })}
+          />
+        </label>
+      </div>
+      <div>
+        <label title="移除短于此长度的路径（mm）">
+          最小路径长度
+          <input
+            type="number"
+            value={state.planOptions.minimumPathLength}
+            step="0.1"
+            min="0"
+            onChange={(e) =>
+              dispatch({ type: "SET_PLAN_OPTION", value: { minimumPathLength: Number(e.target.value) } })
+            }
+          />
+        </label>
+        <div className="flex">
+          <label title="落笔时的加速度 (mm/s²)">
+            落下加速度 (mm/s<sup>2</sup>)
+            <input
+              type="number"
+              value={state.planOptions.penDownAcceleration}
+              step="0.1"
+              min="0"
+              onChange={(e) =>
+                dispatch({ type: "SET_PLAN_OPTION", value: { penDownAcceleration: Number(e.target.value) } })
+              }
+            />
+          </label>
+          <label title="落笔时的最大速度 (mm/s)">
+            落下最大速度 (mm/s)
+            <input
+              type="number"
+              value={state.planOptions.penDownMaxVelocity}
+              step="0.1"
+              min="0"
+              onChange={(e) =>
+                dispatch({ type: "SET_PLAN_OPTION", value: { penDownMaxVelocity: Number(e.target.value) } })
+              }
+            />
+          </label>
+        </div>
+        <label>
+          转弯系数
+          <input
+            type="number"
+            value={state.planOptions.penDownCorneringFactor}
+            step="0.01"
+            min="0"
+            onChange={(e) =>
+              dispatch({ type: "SET_PLAN_OPTION", value: { penDownCorneringFactor: Number(e.target.value) } })
+            }
+          />
+        </label>
+        <div className="flex">
+          <label title="抬笔时的加速度 (mm/s²)">
+            抬起加速度 (mm/s<sup>2</sup>)
+            <input
+              type="number"
+              value={state.planOptions.penUpAcceleration}
+              step="0.1"
+              min="0"
+              onChange={(e) =>
+                dispatch({ type: "SET_PLAN_OPTION", value: { penUpAcceleration: Number(e.target.value) } })
+              }
+            />
+          </label>
+          <label title="抬笔时的最大速度 (mm/s)">
+            抬起最大速度 (mm/s)
+            <input
+              type="number"
+              value={state.planOptions.penUpMaxVelocity}
+              step="0.1"
+              min="0"
+              onChange={(e) =>
+                dispatch({ type: "SET_PLAN_OPTION", value: { penUpMaxVelocity: Number(e.target.value) } })
+              }
+            />
+          </label>
+        </div>
+        <div className="flex">
+          <label title="抬笔所需时间（秒）">
+            抬笔耗时 (s)
+            <input
+              type="number"
+              value={state.planOptions.penLiftDuration}
+              step="0.01"
+              min="0"
+              onChange={(e) =>
+                dispatch({ type: "SET_PLAN_OPTION", value: { penLiftDuration: Number(e.target.value) } })
+              }
+            />
+          </label>
+          <label title="落笔所需时间（秒）">
+            落笔耗时 (s)
+            <input
+              type="number"
+              value={state.planOptions.penDropDuration}
+              step="0.01"
+              min="0"
+              onChange={(e) =>
+                dispatch({ type: "SET_PLAN_OPTION", value: { penDropDuration: Number(e.target.value) } })
+              }
+            />
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type PortSelectorProps = {
+  driver: BaseDriver | null;
+  setDriver: (driver: BaseDriver) => void;
+  hardware: Hardware;
+};
+
+function PortSelector({ driver, setDriver, hardware }: PortSelectorProps) {
+  const [initializing, setInitializing] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setDriver is stable
+  useEffect(() => {
+    (async () => {
+      if (driver?.connected) return; // Already connected
+      setInitializing(true);
+      try {
+        const ports = await navigator.serial.getPorts(); // re-connect to previously established connection
+        const port = ports[0];
+        if (port) {
+          console.log("connecting to", port);
+          // get the first
+          setDriver(await WebSerialDriver.connect(port, hardware));
+        }
+      } finally {
+        setInitializing(false);
+      }
+    })();
+  }, [driver, hardware]);
+  return (
+    <>
+      {driver?.connected ? `已连接到 ${driver.name()}` : null}
+      <button
+        type="button"
+        disabled={initializing}
+        onClick={async () => {
+          setInitializing(true);
+          try {
+            const port = await navigator.serial.requestPort({
+              filters: [{ usbVendorId: 0x04d8, usbProductId: 0xfd92 }],
+            });
+            setDriver(await WebSerialDriver.connect(port, hardware));
+          } catch (e) {
+            alert(`Failed to connect to serial device: ${e.message}`);
+            console.error(e);
+          } finally {
+            setInitializing(false);
+          }
+        }}
+      >
+        {initializing ? "连接中..." : driver?.connected ? "更换端口" : "连接"}
+      </button>
+    </>
+  );
+}
+
+function Root() {
+  const [driver, setDriver] = useState<BaseDriver | null>(null);
+  const [isDriverConnected, setIsDriverConnected] = useState(false);
+  useEffect(() => {
+    if (isDriverConnected) return;
+    if (IS_WEB) return;
+    (async () => {
+      setDriver(await Bit2AtomDriver.connect());
+      setIsDriverConnected(true);
+    })();
+  }, [isDriverConnected]);
+
+  const [state, dispatch] = useReducer(reducer, initialState);
+  const { isPlanning, plan, setPlan } = usePlan(state.paths, state.planOptions);
+  const [isLoadingFile, setIsLoadingFile] = useState(false);
+
+  useEffect(() => {
+    window.localStorage.setItem("planOptions", JSON.stringify(state.planOptions));
+  }, [state.planOptions]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies(setPlan): React setters are stable
+  useEffect(() => {
+    if (driver == null) return;
+    driver.onprogress = (motionIdx: number) => {
+      dispatch({ type: "SET_PROGRESS", motionIdx });
+    };
+    driver.oncancelled = driver.onfinished = () => {
+      dispatch({ type: "SET_PROGRESS", motionIdx: null });
+    };
+    driver.ondevinfo = (devInfo: DeviceInfo) => {
+      dispatch({ type: "SET_DEVICE_INFO", value: devInfo });
+      dispatch({ type: "SET_PLAN_OPTION", value: { ...state.planOptions, hardware: devInfo.hardware } });
+    };
+    driver.onpause = (paused: boolean) => {
+      dispatch({ type: "SET_PAUSED", value: paused });
+    };
+    driver.onplan = (plan: Plan) => {
+      setPlan(plan);
+    };
+    if (driver instanceof Bit2AtomDriver) {
+      driver.svgioEnabled = (enabled: boolean) => {
+        dispatch({ type: "SET_SVGIO_OPTION", value: { enabled } });
+      };
+    }
+  }, [driver, state.planOptions]);
+
+  useEffect(() => {
+    // poll the driver so React notices connection changes
+    if (!driver) return;
+    const interval = setInterval(() => {
+      if (state.connected !== driver.connected) {
+        dispatch({ type: "SET_CONNECTED", connected: driver.connected });
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, [driver, state.connected]);
+
+  const handleFile = React.useCallback(
+    (file: File) => {
+      setIsLoadingFile(true);
+      setPlan(null);
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        dispatch(setPaths(readSvg(reader.result as string)));
+        setIsLoadingFile(false);
+      };
+      reader.onerror = () => {
+        setIsLoadingFile(false);
+      };
+      reader.readAsText(file);
+    },
+    [setPlan],
+  );
+  const handleClear = React.useCallback(() => {
+    setPlan(null);
+    dispatch({ type: "CLEAR_PATHS" });
+  }, [setPlan]);
+  const handleExportSvg = React.useCallback(() => {
+    if (!plan) return;
+    const stepsPerMm = !isBuiltinHardware(state.planOptions.hardware)
+      ? computeStepsPerMm(state.planOptions.driveParams)
+      : Device(state.planOptions.hardware).stepsPerMm;
+    const svg = planToSvg(plan, stepsPerMm, state.planOptions.paperSize);
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "export.svg";
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [plan, state.planOptions]);
+  const [theme, setTheme] = React.useState<'light' | 'dark'>(
+    () => (window.localStorage.getItem("bit2atom-theme") as 'light' | 'dark') || "light"
+  );
+  React.useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    window.localStorage.setItem("bit2atom-theme", theme);
+  }, [theme]);
+
+
+
+  useEffect(() => {
+    // Called when the user drags and drops the image
+    const ondrop = (e: DragEvent) => {
+      e.preventDefault();
+      document.body.classList.remove("dragover");
+      const file = e.dataTransfer?.items[0]?.getAsFile();
+      if (file) handleFile(file);
+    };
+    const ondragover = (e: DragEvent) => {
+      e.preventDefault();
+      document.body.classList.add("dragover");
+    };
+    const ondragleave = (e: DragEvent) => {
+      e.preventDefault();
+      document.body.classList.remove("dragover");
+    };
+    const onpaste = (e: ClipboardEvent) => {
+      e.clipboardData?.items[0].getAsString((s) => {
+        dispatch(setPaths(readSvg(s)));
+      });
+    };
+    document.body.addEventListener("drop", ondrop);
+    document.body.addEventListener("dragover", ondragover);
+    document.body.addEventListener("dragleave", ondragleave);
+    document.addEventListener("paste", onpaste);
+    return () => {
+      document.body.removeEventListener("drop", ondrop);
+      document.body.removeEventListener("dragover", ondragover);
+      document.body.removeEventListener("dragleave", ondragleave);
+      document.removeEventListener("paste", onpaste);
+    };
+  }, [handleFile]);
+
+  // Each time new motion is started, save the start time
+  // biome-ignore lint/correctness/useExhaustiveDependencies: currentMotionStartedTime should be re-set with each motion
+  const currentMotionStartedTime = useMemo(() => {
+    return new Date();
+  }, [state.progress, state.paused]);
+
+  const previewArea = useRef(null);
+  const previewSize = useComponentSize(previewArea);
+  const showDragTarget = !plan && !isLoadingFile && !isPlanning;
+
+  return (
+    <DispatchContext.Provider value={dispatch}>
+      <div className={`root ${state.connected ? "connected" : "已断开"}`}>
+        <div className="control-panel">
+          <div className="saxi-title">
+            <img src={bit2atomLogo} alt="Bit2AtomBot" className="title-logo" />
+          </div>
+          {!IS_WEB && (
+            <div className={state.connected && state.deviceInfo?.path ? "info" : "info-disconnected"}>
+              {state.connected
+                ? state.deviceInfo?.path
+                  ? `已连接到 EBB (${state.deviceInfo.path}`
+                  : "未连接到 EBB"
+                : "disconnected"}
+            </div>
+          )}
+          {IS_WEB && (
+            <div className="section-body">
+            <PortSelector
+              driver={driver}
+              setDriver={setDriver}
+              hardware={(driver as WebSerialDriver)?.ebb?.hardware ?? state.planOptions.hardware}
+            />
+            </div>
+          )}
+          <div className="section-header">画笔设置</div>
+          <div className="section-body">
+            <PenHeight state={state} driver={driver} />
+            <MotorControl driver={driver} />
+            <HardwareOptions state={state} driver={driver} />
+            <ResetToDefaultsButton />
+          </div>
+          <div className="section-header">纸张设置</div>
+          <div className="section-body">
+            <PaperConfig state={state} />
+            <LayerSelector state={state} />
+          </div>
+          <details>
+            <summary className="section-header">更多设置</summary>
+            <div className="section-body">
+              <PlanConfig state={state} />
+              <OriginOptions state={state} />
+              <VisualizationOptions state={state} />
+              <div className="section-header" style={{marginTop:"8px"}}>主题设置</div>
+              <label className="flex-checkbox">
+                <input
+                  type="checkbox"
+                  checked={theme === "light"}
+                  onChange={() => setTheme("light")}
+                />
+                浅色模式
+              </label>
+              <label className="flex-checkbox">
+                <input
+                  type="checkbox"
+                  checked={theme === "dark"}
+                  onChange={() => setTheme("dark")}
+                />
+                暗色模式
+              </label>
+            </div>
+          </details>
+          {state.svgIoOptions.enabled && (
+            <details>
+              <summary className="section-header">AI</summary>
+              <div className="section-body">
+                <SvgIoOptions state={state} />
+              </div>
+            </details>
+          )}
+          <div className="spacer" />
+          <div className="control-panel-bottom">
+            <div className="section-header">绘图设置</div>
+            <div className="section-body section-body__plot">
+              <PlanStatistics plan={plan} planOptions={state.planOptions} />
+              <TimeLeft
+                plan={plan}
+                progress={state.progress}
+                currentMotionStartedTime={currentMotionStartedTime}
+                paused={state.paused}
+              />
+          {plan && !state.isSimulating && (
+            <button
+              type="button"
+              className="export-svg-btn"
+              onClick={handleExportSvg}
+            >
+              导出 SVG
+            </button>
+          )}
+              <PlotButtons plan={plan} isPlanning={isPlanning} state={state} driver={driver} />
+            </div>
+          </div>
+        </div>
+        <div className="preview-area" ref={previewArea}>
+          <PlanPreview
+            state={state}
+            previewSize={{ width: Math.max(0, previewSize.width - 40), height: Math.max(0, previewSize.height - 40) }}
+            plan={plan}
+          />
+          <PlanLoader isPlanning={isPlanning} isLoadingFile={isLoadingFile} />
+          {showDragTarget && <DragTarget handleFile={handleFile} />}
+          {state.paths && state.paths.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClear}
+              style={{
+                position: "absolute",
+                top: "10px",
+                right: "10px",
+                zIndex: 10,
+                width: "auto",
+                padding: "4px 12px",
+                fontSize: "12px",
+              }}
+            >
+              清除 SVG
+            </button>
+          )}
+        </div>
+      </div>
+    </DispatchContext.Provider>
+  );
+}
+
+function DragTarget({ handleFile }: { handleFile: (file: File) => void }) {
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleFileInputChange = React.useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) handleFile(file);
+    },
+    [handleFile],
+  );
+
+  return (
+    <div className="drag-target">
+      <div className="drag-target-message">
+        <span>将 SVG 拖拽至此，或</span>
+        <button type="button" onClick={() => fileInputRef.current.click()}>
+          Upload SVG
+        </button>{" "}
+        {/* the input for the system file picker can't be styled, so hide it and use this button*/}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".svg"
+          style={{ display: "none" }}
+          onChange={handleFileInputChange}
+        />
+      </div>
+    </div>
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+// biome-ignore lint/style/noNonNullAssertion: static element
+createRoot(document.getElementById("app")!).render(<Root />);
+
+/**
+ * Read an SVG string and transform it to a list of Path.
+ * @param svgString Raw SVG String
+ * @returns A list of obj
+ */
+function readSvg(svgString: string): Path[] {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgString, "image/svg+xml");
+  const svg = doc.querySelector("svg");
+  const paths = flattenSVG(svg);
+
+  // flattenSVG (v0.3.0) does NOT extract fill/fillRule/groupOrder.
+  // We patch them here from the SVG elements.
+  let pathIdx = 0;
+  for (const shape of svg.querySelectorAll("rect, circle, ellipse, path, line, polyline, polygon")) {
+    if (pathIdx >= paths.length) break;
+    const fill = shape.getAttribute("fill") || (shape as SVGElement).style?.fill || null;
+    const fillRule = shape.getAttribute("fill-rule")
+      || (shape as SVGElement).style?.fillRule
+      || svg.getAttribute("fill-rule")
+      || (svg as SVGElement).style?.fillRule
+      || null;
+    // Handle compound paths: a single <path> can produce multiple flattened paths
+    // (one per M command). Apply same fill/fillRule to all of them.
+    let subpaths = 1;
+    if (shape.nodeName.toLowerCase() === "path") {
+      try {
+        const pd = (shape as any).getPathData?.({ normalize: true });
+        if (pd) subpaths = pd.filter((c: any) => c.type === "M").length;
+      } catch { /* use default 1 */ }
+    }
+    for (let s = 0; s < subpaths && pathIdx < paths.length; s++) {
+      paths[pathIdx] = {
+        ...paths[pathIdx],
+        fill: fill && fill !== "" ? fill : null,
+        fillRule: fillRule && fillRule !== "" ? fillRule : "nonzero",
+        groupOrder: paths[pathIdx].groupId ? parseInt(paths[pathIdx].groupId) || 0 : 0,
+      };
+      pathIdx++;
+    }
+  }
+  return paths;
+}
