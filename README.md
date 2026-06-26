@@ -134,7 +134,7 @@ Bit2AtomBot 是一款专为 **AxiDraw 系列笔式绘图仪**设计的现代化 
 
 ```bash
 # 1. 进入项目目录
-cd Bit2AtomPlotWebUI/saxi-main
+cd Bit2AtomPlotWebUI
 
 # 2. 安装依赖
 npm install
@@ -234,12 +234,6 @@ saxi-main/
 ```bash
 # 直接绘制 SVG 文件（不启动 Web 服务器）
 node cli.mjs plot input.svg --paper-size A4 --margin 15
-```
-
-### AI 图像生成（需 API Key）
-
-```bash
-node cli.mjs --svgio-api-key YOUR_API_KEY
 ```
 
 ### WebSerial 模式（纯浏览器控制）
