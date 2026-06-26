@@ -8,11 +8,11 @@
 
 Bit2AtomBot 是一款专为 **AxiDraw 系列笔式绘图仪**设计的现代化 Web 控制端。它提供了更直观的操作界面、更丰富的硬件适配能力和更流畅的用户体验。
 
-![image-20260625225937219](https://github.com/lymanzhang/Bit2AtomPlotWebUI/blob/main/docs/image-20260624231750551.png)
+![image-20260624231750551](https://github.com/lymanzhang/Bit2AtomPlotWebUI/blob/main/docs/image-20260625225937219.png)
 
 ### 旧版
 
-![image-20260624231750551](https://github.com/lymanzhang/Bit2AtomPlotWebUI/blob/main/docs/image-20260625225937219.png)
+![image-20260625225937219](https://github.com/lymanzhang/Bit2AtomPlotWebUI/blob/main/docs/image-20260624231750551.png)
 
 # **AxiDraw控制程序**
 
