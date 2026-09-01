@@ -123,7 +123,6 @@ export class SerialPortSerialPort extends EventEmitter implements SerialPort {
     listener: EventListenerOrEventListenerObject,
     options?: boolean | AddEventListenerOptions,
   ): void;
-  // biome-ignore lint/suspicious/noExplicitAny: match EventEmitter
   public addEventListener(type: any, listener: any, options?: any): void {
     if (typeof options === "object" && options.once) {
       this.once(type, listener);
@@ -142,7 +141,6 @@ export class SerialPortSerialPort extends EventEmitter implements SerialPort {
     callback: EventListenerOrEventListenerObject,
     options?: boolean | EventListenerOptions,
   ): void;
-  // biome-ignore lint/suspicious/noExplicitAny: match EventEmitter
   public removeEventListener(type: any, callback: any, _options?: any): void {
     this.off(type, callback);
   }

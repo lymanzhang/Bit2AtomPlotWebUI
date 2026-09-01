@@ -1,6 +1,6 @@
 import type { Path } from "flatten-svg";
 import { elideShorterThan, merge as joinNearbyPaths, reorder as sortPaths } from "optimize-paths";
-import { Device, type Plan, type PlanOptions, plan, computeStepsPerMm, isBuiltinHardware } from "./planning.js";
+import { getDevice, type Plan, type PlanOptions, plan, computeStepsPerMm, isBuiltinHardware } from "./planning.js";
 import { cropToMargins, dedupPoints, scaleToPaper } from "./util.js";
 import { type Vec2, vmul, vrot } from "./vec.js";
 import { removeHiddenLines } from "./hiding.js";
@@ -19,7 +19,7 @@ const mmPerSvgUnit = mmPerInch / svgUnitsPerInch;
  */
 export function replan(inPaths: Path[], planOptions: PlanOptions): Plan {
   let paths: Vec2[][] = inPaths.map((path) => path.points);
-  const device = Device(planOptions.hardware);
+  const device = getDevice(planOptions.hardware);
   const effectiveStepsPerMm = isBuiltinHardware(planOptions.hardware)
     ? device.stepsPerMm
     : computeStepsPerMm(planOptions.driveParams);
@@ -55,31 +55,53 @@ export function replan(inPaths: Path[], planOptions: PlanOptions): Plan {
   // Rescaling loses the stroke info, so refer back to the original paths to
   // filter based on the stroke. Rescaling doesn't change the number or order
   // of the paths.
-  if (planOptions.layerMode === "group") {
-    paths = paths.filter((_path, i) => planOptions.selectedGroupLayers.has(inPaths[i].groupId));
-  } else if (planOptions.layerMode === "stroke") {
-    paths = paths.filter((_path, i) => planOptions.selectedStrokeLayers.has(inPaths[i].stroke));
+  //
+  // NOTE: When hidden-line removal is enabled, layer filtering is deferred
+  // until AFTER hidden-line removal so that fill paths from unselected layers
+  // can still clip strokes from selected layers. Without this, selecting only
+  // stroke layers (without their fill layers) would defeat hidden-line removal.
+  const layerFilterEnabled = planOptions.layerMode === "group" || planOptions.layerMode === "stroke";
+  const isLayerSelected = (originalIndex: number): boolean => {
+    if (planOptions.layerMode === "group") {
+      return planOptions.selectedGroupLayers.has(inPaths[originalIndex].groupId);
+    }
+    if (planOptions.layerMode === "stroke") {
+      return planOptions.selectedStrokeLayers.has(inPaths[originalIndex].stroke);
+    }
+    return true;
+  };
+
+  if (layerFilterEnabled && !planOptions.hiding) {
+    // No hidden-line removal: filter up front as before.
+    if (planOptions.layerMode === "group") {
+      paths = paths.filter((_path, i) => planOptions.selectedGroupLayers.has(inPaths[i].groupId));
+    } else if (planOptions.layerMode === "stroke") {
+      paths = paths.filter((_path, i) => planOptions.selectedStrokeLayers.has(inPaths[i].stroke));
+    }
   }
 
   // Hidden-line removal
   if (planOptions.hiding) {
-    var filteredInPaths = inPaths.filter(function(_p, i) {
-      if (planOptions.layerMode === "group") return planOptions.selectedGroupLayers.has(inPaths[i].groupId);
-      if (planOptions.layerMode === "stroke") return planOptions.selectedStrokeLayers.has(inPaths[i].stroke);
-      return true;
-    });
-    var clippable = filteredInPaths.map(function(p, i) {
-      return {
-        points: paths[i],
-        stroke: p.stroke ?? null,
-        fill: p.fill ?? null,
-        fillRule: p.fillRule ?? "nonzero",
-        groupOrder: p.groupOrder ?? 0,
-      };
-    });
-    clippable.sort(function(a, b) { return (a.groupOrder ?? 0) - (b.groupOrder ?? 0); });
-    var result = removeHiddenLines(clippable);
-    paths = result.map(function(p) { return p.points; });
+    // Build clippable array from ALL paths (not filtered by layer selection)
+    // so that fill paths from unselected layers can still clip strokes.
+    const clippable = inPaths.map((p, i) => ({
+      points: paths[i],
+      stroke: p.stroke ?? null,
+      fill: p.fill ?? null,
+      fillRule: p.fillRule ?? "nonzero",
+      groupOrder: p.groupOrder ?? 0,
+      originalIndex: i,
+    }));
+    clippable.sort((a, b) => (a.groupOrder ?? 0) - (b.groupOrder ?? 0));
+    const result = removeHiddenLines(clippable);
+    // Filter the result by layer selection now (after hidden-line removal).
+    // Each result path carries the originalIndex of the path it came from.
+    if (layerFilterEnabled) {
+      const filtered = result.filter((p) => isLayerSelected(p.originalIndex));
+      paths = filtered.map((p) => p.points);
+    } else {
+      paths = result.map((p) => p.points);
+    }
   }
 
   if (planOptions.pointJoinRadius > 0) {

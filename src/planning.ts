@@ -133,10 +133,10 @@ interface ToolingProfile {
   penDropDuration: number;
 }
 
-export const Device = (hardware = "v3"): Device => {
+export const getDevice = (hardware = "v3"): Device => {
   if (hardware === "brushless") return AxidrawBrushless;
   if (hardware === "nextdraw-2234") return NextDraw2234;
-  if (hardware === "idraw-h-se") return Axidraw; // https://github.com/alexrudd2/saxi/issues/298
+  if (hardware === "idraw-h-se") return Axidraw; 
   if (hardware === "custom") return Axidraw;
   return Axidraw;
 };
@@ -797,4 +797,57 @@ export function plan(paths: Vec2[][], profile: ToolingProfile, penHome: Vec2 = {
   // Final return to pen home
   motions.push(constantAccelerationPlan([curPos, penHome], profile.penUpProfile));
   return new Plan(motions);
+}
+
+/**
+ * Find the motion index at which each drawn path starts in the plan.
+ * plan() emits a fixed 4-motion group per path:
+ *   [travel (XYMotion), pen down (PenMotion), draw (XYMotion), pen up (PenMotion)]
+ * A group start is an XYMotion immediately followed by a pen-down PenMotion
+ * (pen height decreasing: initialPos > finalPos).
+ * These indices are the valid resume points for rewind-and-redraw.
+ */
+export function pathGroupStarts(plan: Plan): number[] {
+  const starts: number[] = [];
+  const motions = plan.motions;
+  for (let i = 0; i < motions.length - 1; i++) {
+    const m = motions[i];
+    const next = motions[i + 1];
+    if (m instanceof XYMotion && next instanceof PenMotion && next.initialPos > next.finalPos) {
+      starts.push(i);
+    }
+  }
+  return starts;
+}
+
+/**
+ * Snap a user-chosen motion index to the nearest path-group start at or
+ * before it, so that resuming always begins with a pen-up travel move
+ * planned from rest.
+ */
+export function snapToGroupStart(plan: Plan, motionIdx: number): number {
+  const starts = pathGroupStarts(plan);
+  let best = starts[0] ?? 0;
+  for (const s of starts) {
+    if (s <= motionIdx) best = s;
+    else break;
+  }
+  return best;
+}
+
+/**
+ * Build a safe pen-up travel move from `from` to `to` for rewinding:
+ * the acceleration/velocity profile is extracted from the plan's own
+ * travel moves, so it matches the machine's configured speeds.
+ */
+export function rewindTravelMotion(plan: Plan, from: Vec2, to: Vec2): XYMotion {
+  for (const m of plan.motions) {
+    if (m instanceof XYMotion && m.blocks.length > 0 && m.blocks[0].vInitial === 0 && m.blocks[0].accel > 0) {
+      const vMax = Math.max(...m.blocks.map((b) => b.vFinal));
+      const accel = m.blocks[0].accel;
+      return constantAccelerationPlan([from, to], { acceleration: accel, maximumVelocity: vMax, corneringFactor: 0 });
+    }
+  }
+  // Fallback: conservative generic pen-up profile.
+  return constantAccelerationPlan([from, to], { acceleration: 400, maximumVelocity: 200, corneringFactor: 0 });
 }

@@ -13,6 +13,12 @@ export interface ClippablePath {
   fill: string | null;
   fillRule: string;
   groupOrder: number;
+  /**
+   * Index of the original path this clippable path was derived from.
+   * Preserved across clipping so that callers can filter the result by
+   * the original layer/stroke membership after hidden-line removal.
+   */
+  originalIndex: number;
 }
 
 function hasStroke(stroke: string | null): boolean {
@@ -38,7 +44,11 @@ function hasFill(fill: string | null): boolean {
 export function removeHiddenLines(paths: ClippablePath[]): ClippablePath[] {
   if (paths.length === 0) return [];
 
-  let result: ClippablePath[] = paths.map((p) => ({ ...p, points: [...p.points] }));
+  let result: ClippablePath[] = paths.map((p) => ({
+    ...p,
+    points: [...p.points],
+    originalIndex: p.originalIndex,
+  }));
 
   let i = 1;
   while (i < result.length) {
@@ -53,10 +63,12 @@ export function removeHiddenLines(paths: ClippablePath[]): ClippablePath[] {
             const clipped = clipPolylineByRing(clippee.points, ring);
             if (clipped.length === 0) continue;
             for (const part of clipped) {
-              newLower.push({ ...clippee, points: part });
+              // Clipped segments inherit the clippee's originalIndex so that
+              // callers can still filter by layer after hidden-line removal.
+              newLower.push({ ...clippee, points: part, originalIndex: clippee.originalIndex });
             }
           } else {
-            newLower.push({ ...clippee, points: [...clippee.points] });
+            newLower.push({ ...clippee, points: [...clippee.points], originalIndex: clippee.originalIndex });
           }
         }
         result = [...newLower, ...result.slice(i)];
@@ -188,4 +200,5 @@ function pointInRing(
   }
 
   return fillRule === "evenodd" ? winding % 2 !== 0 : winding !== 0;
-}
+}
+

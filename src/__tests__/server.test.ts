@@ -149,6 +149,59 @@ describe("Plot Endpoint Test Suite", () => {
       // expect(mockSerialPortInstance.commands).toContain('SR,60000000,0');
     }, 10000);
 
+    test("pause, rewind and resume replays from an earlier path", async () => {
+      // Run a normal plot first to get a baseline command count
+      await request(server).post("/plot").send(COMPLEX_PLAN).expect(200);
+      await waitForPlottingComplete(server);
+      const normalCount = mockSerialPortInstance.commands.length;
+      mockSerialPortInstance.clearCommands();
+
+      // Plot again, pause mid-way, then resume with rewindTo = path 0
+      await request(server).post("/plot").send(COMPLEX_PLAN).expect(200);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await request(server).post("/pause").expect(200);
+      await request(server).post("/resume").send({ rewindTo: 0 }).expect(200);
+
+      await waitForPlottingComplete(server);
+
+      // Rewinding replays earlier motions, so at least as many commands as a
+      // normal run are issued (plus the rewind travel move).
+      expect(mockSerialPortInstance.commands.length).toBeGreaterThanOrEqual(normalCount);
+      expect(mockSerialPortInstance.commands).toContain("EM,1,1");
+    }, 15000);
+
+    test("supports consecutive rewinds (pause → rewind → pause → rewind)", async () => {
+      // Long plan so pauses reliably land mid-plot (mock executes ~2ms/command)
+      const manyPaths = Array.from({ length: 24 }, (_, i) => [
+        { x: 0, y: i * 10 },
+        { x: 100, y: i * 10 },
+      ]);
+      const LONG_PLAN = plan(manyPaths, AxidrawFast).serialize();
+
+      await request(server).post("/plot").send(LONG_PLAN).expect(200);
+      await waitForPlottingComplete(server);
+      const normalCount = mockSerialPortInstance.commands.length;
+      mockSerialPortInstance.clearCommands();
+
+      // First pause + rewind
+      await request(server).post("/plot").send(LONG_PLAN).expect(200);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await request(server).post("/pause").expect(200);
+      await request(server).post("/resume").send({ rewindTo: 0 }).expect(200);
+
+      // Second pause + rewind during the redraw
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await request(server).post("/pause").expect(200);
+      await request(server).post("/resume").send({ rewindTo: 0 }).expect(200);
+
+      await waitForPlottingComplete(server, 30000);
+
+      // Two rewinds replay from path 0, so at least one full pass of commands
+      // is guaranteed (likely more).
+      expect(mockSerialPortInstance.commands.length).toBeGreaterThanOrEqual(normalCount);
+      expect(mockSerialPortInstance.commands).toContain("EM,1,1");
+    }, 40000);
+
     test("report plot status", async () => {
       let statusResponse = await request(server).get("/plot/status").expect(200);
       expect(statusResponse.body.plotting).toBe(false);
@@ -162,6 +215,111 @@ describe("Plot Endpoint Test Suite", () => {
 
       statusResponse = await request(server).get("/plot/status").expect(200);
       expect(statusResponse.body.plotting).toBe(false);
+    }, 10000);
+  });
+
+  describe("Redraw Range Operations", () => {
+    test("reject redraw when no plot has run yet", async () => {
+      // Use a fresh server instance: the shared one has already plotted in
+      // earlier tests, so |lastPlan| would exist there.
+      const fresh = await startServer(0);
+      try {
+        await request(fresh).post("/redraw").send({ from: 0, to: 4 }).expect(409);
+      } finally {
+        await new Promise<void>((resolve) => fresh.close(() => resolve()));
+      }
+    });
+
+    test("reject redraw with an invalid range", async () => {
+      await request(server).post("/plot").send(COMPLEX_PLAN).expect(200);
+      await waitForPlottingComplete(server);
+
+      // to <= from is invalid
+      await request(server).post("/redraw").send({ from: 4, to: 4 }).expect(400);
+      await request(server).post("/redraw").send({ from: 8, to: 4 }).expect(400);
+      await request(server).post("/redraw").send({ from: -1, to: 4 }).expect(400);
+
+      await waitForPlottingComplete(server);
+    });
+
+    test("reject redraw while a plot is in progress", async () => {
+      await request(server).post("/plot").send(COMPLEX_PLAN).expect(200);
+      await request(server).post("/redraw").send({ from: 0, to: 4 }).expect(400);
+      await waitForPlottingComplete(server);
+    });
+
+    test("redraw only replays the selected motion range", async () => {
+      // Baseline: full plot command count
+      await request(server).post("/plot").send(COMPLEX_PLAN).expect(200);
+      await waitForPlottingComplete(server);
+      const fullCount = mockSerialPortInstance.commands.length;
+      mockSerialPortInstance.clearCommands();
+
+      // Each path produces 4 motions (travel, pen down, draw, pen up), so the
+      // 4-path plan has 16 motions. Redraw only paths 1-2 → motions [4, 8).
+      await request(server).post("/redraw").send({ from: 4, to: 8 }).expect(200);
+      await waitForPlottingComplete(server);
+
+      const commands = mockSerialPortInstance.commands;
+      expect(commands).toContain("EM,1,1");
+      // Substantially fewer commands than a full plot (about half or less)
+      expect(commands.length).toBeLessThan(fullCount * 0.75);
+      // Ends with motors disabled
+      expect(commands[commands.length - 1]).toBe("EM,0,0");
+    }, 10000);
+
+    test("redraw snaps the start to a path-group boundary", async () => {
+      await request(server).post("/plot").send(COMPLEX_PLAN).expect(200);
+      await waitForPlottingComplete(server);
+      mockSerialPortInstance.clearCommands();
+
+      // from = 5 falls inside path 1's group [4, 8); it should snap to 4 so
+      // the group replays whole (pen up/down pairing preserved).
+      await request(server).post("/redraw").send({ from: 5, to: 8 }).expect(200);
+      await waitForPlottingComplete(server);
+
+      const commands = mockSerialPortInstance.commands;
+      expect(commands).toContain("EM,1,1");
+    }, 10000);
+
+    test("redraw auto-homes the pen after finishing", async () => {
+      await request(server).post("/plot").send(COMPLEX_PLAN).expect(200);
+      await waitForPlottingComplete(server);
+      mockSerialPortInstance.clearCommands();
+
+      await request(server).post("/redraw").send({ from: 4, to: 8 }).expect(200);
+      await waitForPlottingComplete(server);
+
+      const commands = mockSerialPortInstance.commands;
+      // prePlot enables motors once; the auto-home must re-enable them again
+      // (postPlot disabled them after the redraw itself).
+      const enableIdxs = commands.map((c, i) => (c === "EM,1,1" ? i : -1)).filter((i) => i >= 0);
+      expect(enableIdxs.length).toBeGreaterThanOrEqual(2);
+      // ...and travel home with a low-level move (LM) — NOT HM, which is a
+      // zero-length no-op after the motors have been re-enabled.
+      const lastEnableIdx = enableIdxs[enableIdxs.length - 1];
+      expect(commands.slice(lastEnableIdx).some((c) => c.startsWith("LM,"))).toBe(true);
+      expect(commands).not.toContain("HM,4000");
+      // Ends with motors disabled
+      expect(commands[commands.length - 1]).toBe("EM,0,0");
+    }, 10000);
+
+    test("home is a safe no-op when the pen is already at home", async () => {
+      // A full plot ends with the plan's own return-to-home travel, so the
+      // pen is already home. /home must lift the pen and re-acquire the
+      // motors, but issue no HM (zero-length after re-enable) and no travel,
+      // ending with motors disabled.
+      await request(server).post("/plot").send(COMPLEX_PLAN).expect(200);
+      await waitForPlottingComplete(server);
+      mockSerialPortInstance.clearCommands();
+
+      await request(server).post("/home").expect(200);
+      await waitForCommandsLogged("EM,0,0");
+
+      const commands = mockSerialPortInstance.commands;
+      expect(commands).toContain("EM,1,1");
+      expect(commands).not.toContain("HM,4000");
+      expect(commands[commands.length - 1]).toBe("EM,0,0");
     }, 10000);
   });
 });

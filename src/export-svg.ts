@@ -1,4 +1,4 @@
-﻿import { type Vec2 } from "./vec.js";
+import { type Vec2 } from "./vec.js";
 import { PaperSize } from "./paper-size.js";
 import { type Plan, PenMotion, XYMotion } from "./planning.js";
 
@@ -25,6 +25,7 @@ export function planToSvg(
       continue;
     }
     if (!penDown) continue;
+    if (!(motion instanceof XYMotion)) continue;
     if (motion.blocks.length === 0) continue;
 
     // Reconstruct polyline from motion blocks.

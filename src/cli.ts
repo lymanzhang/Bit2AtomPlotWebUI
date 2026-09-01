@@ -10,7 +10,7 @@ import { hideBin } from "yargs/helpers";
 import type { Hardware } from "./ebb.js";
 import { replan } from "./massager.js";
 import { PaperSize } from "./paper-size.js";
-import { Device, defaultPlanOptions, type PlanOptions } from "./planning.js";
+import { getDevice, defaultPlanOptions, type PlanOptions } from "./planning.js";
 import { connectEBB, startServer } from "./server.js";
 import { formatDuration } from "./util.js";
 
@@ -239,7 +239,7 @@ export function cli(argv: string[]): void {
           console.error("Couldn't connect to device!");
           process.exit(1);
         }
-        const device = Device(ebb.hardware);
+        const device = getDevice(ebb.hardware);
         await ebb.setPenHeight(device.penPctToPos(args.percent), 1000);
 
         console.log(`moving to ${args.percent}%...`);
@@ -265,10 +265,6 @@ export function cli(argv: string[]): void {
           .option("max-payload-size", {
             describe: "maximum payload size to accept",
             default: "200mb",
-          })
-          .option("svgio-api-key", {
-            describe: "API Key - to enable AI image generation with SVG IO",
-            default: "",
           }),
       (args) => {
         startServer(
@@ -277,7 +273,6 @@ export function cli(argv: string[]): void {
           args.device,
           args["enable-cors"],
           args["max-payload-size"],
-          args["svgio-api-key"],
         );
       },
     )

@@ -18,7 +18,7 @@ import React, {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { PaperSize } from "./paper-size";
-import { Device, defaultPlanOptions, type MotionData, Plan, type PlanOptions, XYMotion, computeStepsPerMm, computeMicrostepsPerMm, isBuiltinHardware, type SavedProfile } from "./planning.js";
+import { getDevice, defaultPlanOptions, type MotionData, pathGroupStarts, Plan, type PlanOptions, XYMotion, computeStepsPerMm, computeMicrostepsPerMm, isBuiltinHardware, type SavedProfile } from "./planning.js";
 import useComponentSize from "./useComponentSize.js";
 import { formatDuration } from "./util.js";
 import { planToSvg } from "./export-svg.js";
@@ -37,13 +37,6 @@ const defaultVisualizationOptions = {
   colorPathsByStrokeOrder: false,
 };
 
-const defaultSvgIoOptions = {
-  enabled: false,
-  prompt: "",
-  status: "",
-  vecType: "FLAT_VECTOR",
-};
-
 const initialState = {
   connected: true,
 
@@ -54,7 +47,6 @@ const initialState = {
   // UI state
   planOptions: defaultPlanOptions,
   visualizationOptions: defaultVisualizationOptions,
-  svgIoOptions: defaultSvgIoOptions,
 
   // Options used to produce the current value of |plan|.
   plannedOptions: null as PlanOptions | null,
@@ -66,7 +58,17 @@ const initialState = {
 
   // While a plot is in progress, this will be the index of the current motion.
   progress: null as number | null,
+  // 已绘制水位线：绘制（或补画）进行/结束期间已画到的最大运动索引。
+  // 绘制结束后 progress 清空，但仍用它保留"已画过"的着色，避免未重画的路径回退为白色。
+  drawnWatermark: null as number | null,
   isSimulating: false,
+
+  // 暂停回溯重绘：将被重绘的运动索引区间 [from, to)。null 表示无回溯。
+  rewindRange: null as { from: number; to: number } | null,
+  // 已重绘（或正在重绘）的区间列表，绘制完成后保留，供用户检查重复绘制区域。
+  redrawnRanges: [] as { from: number; to: number }[],
+  // 补画模式（绘制结束后）：双滑块选择路径区间，仅重绘选中区间。
+  redrawMode: false as boolean,
 };
 
 // Update the initial state with previously persisted settings (if present)
@@ -80,11 +82,13 @@ type State = typeof initialState;
 type Action =
   | { type: "SET_PLAN_OPTION"; value: Partial<State["planOptions"]> }
   | { type: "SET_VISUALIZATION_OPTION"; value: Partial<State["visualizationOptions"]> }
-  | { type: "SET_SVGIO_OPTION"; value: Partial<State["svgIoOptions"]> }
   | { type: "SET_DEVICE_INFO"; value: State["deviceInfo"] }
   | { type: "SET_PAUSED"; value: boolean }
   | { type: "SET_PROGRESS"; motionIdx: number | null }
+  | { type: "SET_DRAWN_WATERMARK"; value: number | null }
+  | { type: "SET_SIMULATING"; value: boolean }
   | { type: "SET_CONNECTED"; connected: boolean }
+  | { type: "SET_REWIND_RANGE"; value: State["rewindRange"] }
   | {
       type: "SET_PATHS";
       paths: State["paths"];
@@ -112,8 +116,6 @@ function reducer(state: State, action: Action): State {
       return { ...state, planOptions: { ...state.planOptions, ...action.value } };
     case "SET_VISUALIZATION_OPTION":
       return { ...state, visualizationOptions: { ...state.visualizationOptions, ...action.value } };
-    case "SET_SVGIO_OPTION":
-      return { ...state, svgIoOptions: { ...state.svgIoOptions, ...action.value } };
     case "SET_DEVICE_INFO":
       return { ...state, deviceInfo: action.value };
     case "SET_PAUSED":
@@ -134,6 +136,9 @@ function reducer(state: State, action: Action): State {
         paths: null,
         groupLayers: [],
         strokeLayers: [],
+        rewindRange: null,
+        redrawnRanges: [],
+        redrawMode: false,
         planOptions: {
           ...state.planOptions,
           selectedGroupLayers: new Set(),
@@ -142,13 +147,27 @@ function reducer(state: State, action: Action): State {
         },
       };
     case "SET_PROGRESS":
-      return { ...state, progress: action.motionIdx };
+      return {
+        ...state,
+        progress: action.motionIdx,
+        // progress 推进时抬升水位线；结束后（null）保留水位线，维持"已画过"着色。
+        drawnWatermark:
+          action.motionIdx == null ? state.drawnWatermark : Math.max(state.drawnWatermark ?? 0, action.motionIdx),
+      };
+    case "SET_DRAWN_WATERMARK":
+      return { ...state, drawnWatermark: action.value };
     case "SET_SIMULATING":
       return { ...state, isSimulating: action.value };
     case "SET_CONNECTED":
       return { ...state, connected: action.connected };
+    case "SET_REWIND_RANGE":
+      return { ...state, rewindRange: action.value };
+    case "SET_REDRAWN_RANGES":
+      return { ...state, redrawnRanges: action.value };
+    case "SET_REDRAW_MODE":
+      return { ...state, redrawMode: action.value };
     default:
-      console.warn(`Unrecognized action '${{ action }}'`);
+      console.warn(`Unrecognized action '${JSON.stringify(action)}'`);
       return state;
   }
 }
@@ -165,7 +184,7 @@ function attemptRejigger(previousOptions: PlanOptions, newOptions: PlanOptions, 
     penDownHeight: previousOptions.penDownHeight,
   };
   if (serialize(previousOptions) === serialize(newOptionsWithOldPenHeights)) {
-    const device = Device(newOptions.hardware);
+    const device = getDevice(newOptions.hardware);
     // The existing plan should be the same except for penup/pendown heights.
     return previousPlan.withPenHeights(
       device.penPctToPos(newOptions.penUpHeight),
@@ -312,7 +331,7 @@ function PenHeight({ state, driver }: { state: State; driver: BaseDriver }) {
   const dispatch = useContext(DispatchContext);
   const setPenUpHeight = (x: number) => dispatch({ type: "SET_PLAN_OPTION", value: { penUpHeight: x } });
   const setPenDownHeight = (x: number) => dispatch({ type: "SET_PLAN_OPTION", value: { penDownHeight: x } });
-  const device = Device(hardware);
+  const device = getDevice(hardware);
 
   const penUp = () => {
     const height = device.penPctToPos(penUpHeight);
@@ -473,7 +492,7 @@ function OriginOptions({ state }: { state: State }) {
   const dispatch = useContext(DispatchContext);
   const stepsPerMm = !isBuiltinHardware(state.planOptions.hardware)
     ? computeStepsPerMm(state.planOptions.driveParams)
-    : Device(state.planOptions.hardware).stepsPerMm;
+    : getDevice(state.planOptions.hardware).stepsPerMm;
   return (
     <div className="flex">
       <label title="绘图时笔的起始和结束位置 (x)">
@@ -509,81 +528,6 @@ function OriginOptions({ state }: { state: State }) {
         />
       </label>
     </div>
-  );
-}
-/**
- * Options to get an AI-Generated SVG image.
- * Use svg.io API: https://api.svg.io/v1/docs
- */
-function SvgIoOptions({ state }: { state: State }) {
-  const { prompt, vecType, status } = state.svgIoOptions;
-  const dispatch = useContext(DispatchContext);
-  // call server
-  const generateImage = async () => {
-    dispatch({ type: "SET_SVGIO_OPTION", value: { status: "正在生成..." } });
-    try {
-      const resp = await fetch("/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: new Blob([JSON.stringify({ prompt, vecType })], { type: "application/json" }),
-      });
-      const data = await resp.json();
-      if (resp.ok) {
-        dispatch({ type: "SET_SVGIO_OPTION", value: { status: "正在加载..." } });
-        // retrieve image
-        const imgUrl = data.data[0].svgUrl;
-        const imgResp = await fetch(imgUrl);
-        const imgData = await imgResp.text();
-        // set image contents
-        dispatch(setPaths(readSvg(imgData)));
-      } else {
-        alert(`生成图像出错： ${data.message ? data.message : resp.statusText}`);
-      }
-    } catch (error) {
-      console.error(error);
-      alert(`Error generating image ${error}`);
-    } finally {
-      dispatch({ type: "SET_SVGIO_OPTION", value: { status: "" } });
-    }
-  };
-  return (
-    <>
-      <div>
-        <label>
-          类型
-          <select
-            value={vecType}
-            onChange={(e) => dispatch({ type: "SET_SVGIO_OPTION", value: { vecType: e.target.value } })}
-          >
-            <option value={"FLAT_VECTOR"}>扁平</option>
-            <option value={"FLAT_VECTOR_OUTLINE"}>轮廓</option>
-            <option value={"FLAT_VECTOR_SILHOUETTE"}>剪影</option>
-            <option value={"FLAT_VECTOR_ONE_LINE_ART"}>单线艺术</option>
-            <option value={"FLAT_VECTOR_LINE_ART"}>线条艺术</option>
-          </select>
-        </label>
-        <label title="prompt">
-          提示词
-          <textarea
-            value={prompt}
-            onChange={(e) => dispatch({ type: "SET_SVGIO_OPTION", value: { prompt: e.target.value } })}
-          />
-        </label>
-      </div>
-      {prompt !== "" ? (
-        <div>
-          {status ? (
-            <span>{status}</span>
-          ) : (
-            <button type="button" onClick={generateImage}>
-              Generate!
-            </button>
-          )}
-        </div>
-      ) : (
-        ""
-      )}
-    </>
   );
 }
 
@@ -724,7 +668,7 @@ function MotorControl({ driver }: { driver: BaseDriver }) {
 function PlanStatistics({ plan, planOptions: po }: { plan: Plan | null; planOptions: PlanOptions }) {
   const stepsPerMm = !isBuiltinHardware(po.hardware)
     ? computeStepsPerMm(po.driveParams)
-    : Device(po.hardware).stepsPerMm;
+    : getDevice(po.hardware).stepsPerMm;
   const totalDist = plan != null ? plan.totalDistance(stepsPerMm) : 0;
   const distStr = totalDist >= 1000
     ? `${(totalDist / 1000).toFixed(1)} m`
@@ -800,41 +744,113 @@ function PlanPreview({
   const ps = state.planOptions.paperSize;
   const stepsPerMm = !isBuiltinHardware(state.planOptions.hardware)
     ? computeStepsPerMm(state.planOptions.driveParams)
-    : Device(state.planOptions.hardware).stepsPerMm;
+    : getDevice(state.planOptions.hardware).stepsPerMm;
   const strokeWidth = state.visualizationOptions.penStrokeWidth * stepsPerMm;
   const colorPathsByStrokeOrder = state.visualizationOptions.colorPathsByStrokeOrder;
   const memoizedPlanPreview = useMemo(() => {
     if (plan) {
       const palette = colorPathsByStrokeOrder
         ? interpolator(colormap({ colormap: "spring" }))
-        : () => "rgba(0, 0, 0, 0.8)";
-      const lines = plan.motions
-        .filter((m) => m instanceof XYMotion)
-        .map((m) => m.blocks.map((b) => b.p1).concat([m.p2])) // Map each XYMotion to its start/end points
-        .filter((m) => m.length);
-      return (
-        <g transform={`scale(${1 / stepsPerMm})`}>
-          <title>Pen home</title>
-          <text x={lines[0][0].x} y={lines[0][0].y} fontSize="40" textAnchor="middle" dominantBaseline="middle">
-            ꚛ
-          </text>
-          {lines.map((line, i) => (
+        : () => "var(--canvas-stroke)";
+      // Build lines with their corresponding motion index for progress tracking
+      const linesWithIdx: { points: { x: number; y: number }[]; motionIdx: number }[] = [];
+      for (let i = 0; i < plan.motions.length; i++) {
+        const m = plan.motions[i];
+        if (m instanceof XYMotion) {
+          const points = m.blocks.map((b) => b.p1).concat([m.p2]);
+          if (points.length > 0) {
+            linesWithIdx.push({ points, motionIdx: i });
+          }
+        }
+      }
+      if (linesWithIdx.length === 0) return null;
+      const lines = linesWithIdx.map((l) => l.points);
+      return { lines, linesWithIdx, palette };
+    }
+    return null;
+  }, [plan, colorPathsByStrokeOrder]);
+
+  // Render plan preview, coloring completed motions differently during plotting
+  const progress = state.progress;
+  const drawnWatermark = state.drawnWatermark;
+  const rewindRange = state.rewindRange;
+  const redrawnRanges = state.redrawnRanges;
+  const redrawMode = state.redrawMode;
+  const paused = state.paused;
+  const renderedPlanPreview = useMemo(() => {
+    if (!memoizedPlanPreview) return null;
+    const { lines, linesWithIdx, palette } = memoizedPlanPreview;
+    const isPlotting = progress != null;
+    const inRanges = (idx: number, ranges: { from: number; to: number }[]) =>
+      ranges.some((r) => idx >= r.from && idx < r.to);
+    return (
+      <g transform={`scale(${1 / stepsPerMm})`}>
+        <title>笔起始点</title>
+        <circle
+          cx={lines[0][0].x}
+          cy={lines[0][0].y}
+          r={stepsPerMm * 1.5}
+          fill="#2196F3"
+          stroke="#1565C0"
+          strokeWidth={stepsPerMm * 0.3}
+        />
+        {lines.map((line, i) => {
+          const motionIdx = linesWithIdx[i].motionIdx;
+          // During plotting, a motion is "completed" if its index < current progress.
+          // After the plot (or redraw) finishes, progress is cleared but the drawn
+          // watermark retains the completed coloring for everything already drawn.
+          const isCompleted =
+            (progress != null && motionIdx < progress) || motionIdx < (drawnWatermark ?? 0);
+          const isCurrent = progress != null && motionIdx === progress;
+          // 暂停回溯重绘着色：
+          //   红色 — 已重绘完成的落笔线（任务结束后保留，便于检查重复绘制区域）
+          //   橙色 — 位于重绘范围内、尚未重绘到的落笔线（暂停选择时为整个回溯区间）
+          const inRedrawScope = redrawnRanges.length > 0 && inRanges(motionIdx, redrawnRanges);
+          const isRedrawn =
+            inRedrawScope && (!isPlotting || motionIdx < progress);
+          const isRewindPending =
+            !isRedrawn &&
+            ((rewindRange != null &&
+              (paused || redrawMode) &&
+              motionIdx >= rewindRange.from &&
+              motionIdx < rewindRange.to) ||
+              (inRedrawScope && isPlotting && motionIdx >= progress));
+          let stroke: string;
+          if (i % 2 === 0) {
+            // Travel moves (pen up) — dimmer
+            stroke = isCompleted
+              ? "var(--canvas-stroke-done)"
+              : isCurrent
+                ? "var(--canvas-stroke-current)"
+                : "var(--canvas-stroke-faded)";
+          } else if (isRedrawn) {
+            // 已重绘完成的落笔线
+            stroke = "var(--canvas-stroke-rewind)";
+          } else if (isRewindPending) {
+            // 待重绘的落笔线
+            stroke = "var(--canvas-stroke-rewind-pending)";
+          } else if (isCompleted) {
+            // Completed draw strokes — accent color
+            stroke = "var(--canvas-stroke-done)";
+          } else if (isCurrent) {
+            // Current stroke being drawn
+            stroke = "var(--canvas-stroke-current)";
+          } else {
+            // Pending strokes
+            stroke = palette(1 - i / lines.length);
+          }
+          return (
             <path
               // biome-ignore lint/suspicious/noArrayIndexKey: the paths are not changed elsewhere
               key={i}
               d={line.reduce((m, { x, y }, j) => `${m}${j === 0 ? "M" : "L"}${x} ${y}`, "")}
-              style={
-                i % 2 === 0
-                  ? { stroke: "rgba(0, 0, 0, 0.3)", strokeWidth: 0.5 }
-                  : { stroke: palette(1 - i / lines.length), strokeWidth }
-              }
+              style={{ stroke, strokeWidth: i % 2 === 0 ? 0.5 : strokeWidth }}
             />
-          ))}
-        </g>
-      );
-    }
-    return null;
-  }, [plan, strokeWidth, colorPathsByStrokeOrder, stepsPerMm]);
+          );
+        })}
+      </g>
+    );
+  }, [memoizedPlanPreview, progress, drawnWatermark, paused, redrawMode, rewindRange, redrawnRanges, strokeWidth, stepsPerMm]);
 
   // w/h of svg.
   // first try scaling so that h = area.h. if w < area.w, then ok.
@@ -893,9 +909,9 @@ function PlanPreview({
         <g>
           <path
             d={`M-${width} 0l${width * 2} 0M0 -${height}l0 ${height * 2}`}
-            style={{ stroke: "rgba(222, 114, 114, 0.6)", strokeWidth: 1 }}
+            style={{ stroke: "var(--canvas-progress)", strokeWidth: 1, opacity: 0.6 }}
           />
-          <path d="M-10 0l20 0M0 -10l0 20" style={{ stroke: "rgba(222, 114, 114, 1)", strokeWidth: 2 }} />
+          <path d="M-10 0l20 0M0 -10l0 20" style={{ stroke: "var(--canvas-progress)", strokeWidth: 2 }} />
         </g>
       </svg>
     );
@@ -908,7 +924,7 @@ function PlanPreview({
         width={ps.size.x - state.planOptions.marginMm * 2}
         height={ps.size.y - state.planOptions.marginMm * 2}
         fill="none"
-        stroke="black"
+        stroke="var(--canvas-margin)"
         strokeWidth="0.1"
         strokeDasharray="1,1"
       />
@@ -920,10 +936,10 @@ function PlanPreview({
   const gridDefs = (
     <defs>
       <pattern id="grid5mm" width={5} height={5} patternUnits="userSpaceOnUse">
-        <path d="M 5 0 L 0 0 0 5" fill="none" stroke="#e4e4e4" strokeWidth="0.05" />
+        <path d="M 5 0 L 0 0 0 5" fill="none" stroke="var(--canvas-grid5)" strokeWidth="0.05" />
       </pattern>
       <pattern id="grid10mm" width={10} height={10} patternUnits="userSpaceOnUse">
-        <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#cdcdcd" strokeWidth="0.13" />
+        <path d="M 10 0 L 0 0 0 10" fill="none" stroke="var(--canvas-grid10)" strokeWidth="0.13" />
       </pattern>
     </defs>
   );
@@ -941,20 +957,20 @@ function PlanPreview({
       const is50 = mm % 50 === 0;
       const tickLen = is50 ? 9 : is10 ? 6 : 3;
       if (mm <= drawW) {
-        ticks.push(<line key={`rt-${mm}`} x1={marginMm + mm} y1={marginMm} x2={marginMm + mm} y2={marginMm - tickLen} stroke="#bbb" strokeWidth={is10 ? 0.15 : 0.08} />);
-        if (is10) ticks.push(<text key={`rtl-${mm}`} x={marginMm + mm} y={marginMm - tickLen - 0.8} fontSize="2.2" textAnchor="middle" fill="#999">{`${mm}`}</text>);
+        ticks.push(<line key={`rt-${mm}`} x1={marginMm + mm} y1={marginMm} x2={marginMm + mm} y2={marginMm - tickLen} stroke="var(--canvas-ruler)" strokeWidth={is10 ? 0.15 : 0.08} />);
+        if (is10) ticks.push(<text key={`rtl-${mm}`} x={marginMm + mm} y={marginMm - tickLen - 0.8} fontSize="2.2" textAnchor="middle" fill="var(--canvas-ruler-text)">{`${mm}`}</text>);
       }
       if (mm <= drawW) {
-        ticks.push(<line key={`rb-${mm}`} x1={marginMm + mm} y1={marginMm + drawH} x2={marginMm + mm} y2={marginMm + drawH + tickLen} stroke="#bbb" strokeWidth={is10 ? 0.15 : 0.08} />);
-        if (is10) ticks.push(<text key={`rbl-${mm}`} x={marginMm + mm} y={marginMm + drawH + tickLen + 1.8} fontSize="2.2" textAnchor="middle" fill="#999">{`${mm}`}</text>);
+        ticks.push(<line key={`rb-${mm}`} x1={marginMm + mm} y1={marginMm + drawH} x2={marginMm + mm} y2={marginMm + drawH + tickLen} stroke="var(--canvas-ruler)" strokeWidth={is10 ? 0.15 : 0.08} />);
+        if (is10) ticks.push(<text key={`rbl-${mm}`} x={marginMm + mm} y={marginMm + drawH + tickLen + 1.8} fontSize="2.2" textAnchor="middle" fill="var(--canvas-ruler-text)">{`${mm}`}</text>);
       }
       if (mm <= drawH) {
-        ticks.push(<line key={`rl-${mm}`} x1={marginMm} y1={marginMm + mm} x2={marginMm - tickLen} y2={marginMm + mm} stroke="#bbb" strokeWidth={is10 ? 0.15 : 0.08} />);
-        if (is10) ticks.push(<text key={`rll-${mm}`} x={marginMm - tickLen - 0.8} y={marginMm + mm + 0.7} fontSize="2.2" textAnchor="end" fill="#999">{`${mm}`}</text>);
+        ticks.push(<line key={`rl-${mm}`} x1={marginMm} y1={marginMm + mm} x2={marginMm - tickLen} y2={marginMm + mm} stroke="var(--canvas-ruler)" strokeWidth={is10 ? 0.15 : 0.08} />);
+        if (is10) ticks.push(<text key={`rll-${mm}`} x={marginMm - tickLen - 0.8} y={marginMm + mm + 0.7} fontSize="2.2" textAnchor="end" fill="var(--canvas-ruler-text)">{`${mm}`}</text>);
       }
       if (mm <= drawH) {
-        ticks.push(<line key={`rr-${mm}`} x1={marginMm + drawW} y1={marginMm + mm} x2={marginMm + drawW + tickLen} y2={marginMm + mm} stroke="#bbb" strokeWidth={is10 ? 0.15 : 0.08} />);
-        if (is10) ticks.push(<text key={`rrl-${mm}`} x={marginMm + drawW + tickLen + 0.8} y={marginMm + mm + 0.7} fontSize="2.2" textAnchor="start" fill="#999">{`${mm}`}</text>);
+        ticks.push(<line key={`rr-${mm}`} x1={marginMm + drawW} y1={marginMm + mm} x2={marginMm + drawW + tickLen} y2={marginMm + mm} stroke="var(--canvas-ruler)" strokeWidth={is10 ? 0.15 : 0.08} />);
+        if (is10) ticks.push(<text key={`rrl-${mm}`} x={marginMm + drawW + tickLen + 0.8} y={marginMm + mm + 0.7} fontSize="2.2" textAnchor="start" fill="var(--canvas-ruler-text)">{`${mm}`}</text>);
       }
     }
     return ticks;
@@ -966,7 +982,7 @@ function PlanPreview({
         {gridDefs}
         {gridRects}
         {rulerMarks}
-        {memoizedPlanPreview}
+        {renderedPlanPreview}
         {margins}
       </svg>
       {progressIndicator}
@@ -1033,7 +1049,11 @@ function PlotButtons({
   isPlanning: boolean;
   driver: BaseDriver;
 }) {
+  const dispatch = useContext(DispatchContext);
   function cancel() {
+    dispatch({ type: "SET_REWIND_RANGE", value: null });
+    dispatch({ type: "SET_REDRAWN_RANGES", value: [] });
+    dispatch({ type: "SET_REDRAW_MODE", value: false });
     driver.cancel();
   }
   function pause() {
@@ -1041,16 +1061,161 @@ function PlotButtons({
   }
   function resume() {
     driver.resume();
+    dispatch({ type: "SET_REWIND_RANGE", value: null });
+    dispatch({ type: "SET_REDRAW_MODE", value: false });
   }
-  function plot(plan: Plan) { driver.plot(plan); }
+  // 记录上次实际绘制时的规划签名，用于补画前校验区间编号仍然对应。
+  const lastPlotSig = React.useRef<string | null>(null);
+  const planSignature = (p: Plan) => (p ? `${serialize(state.planOptions)}#${p.motions.length}` : null);
+  function plot(plan: Plan) {
+    lastPlotSig.current = planSignature(plan);
+    dispatch({ type: "SET_REWIND_RANGE", value: null });
+    dispatch({ type: "SET_REDRAWN_RANGES", value: [] });
+    dispatch({ type: "SET_REDRAW_MODE", value: false });
+    // 新一次绘制从头开始，清除上一轮的已绘制水位线
+    dispatch({ type: "SET_DRAWN_WATERMARK", value: null });
+    driver.plot(plan);
+  }
 
-  const dispatch = useContext(DispatchContext);
+  // --- 暂停回溯重绘 ---
+  // plan() 为每条路径生成固定 4 个动作的组：[抬笔移动, 落笔, 绘制, 抬笔]。
+  // groupStarts[i] 是第 i 条路径的起始动作索引，即合法的回溯重启点。
+  const groupStarts = useMemo(() => (plan ? pathGroupStarts(plan) : []), [plan]);
+  const [rewindGroup, setRewindGroup] = useState(0);
+  // 暂停时所在路径组的序号（progress 落在哪个组内）
+  const pauseGroupIdx = useMemo(() => {
+    if (state.progress == null) return -1;
+    let g = -1;
+    for (let i = 0; i < groupStarts.length; i++) {
+      if (groupStarts[i] <= state.progress) g = i;
+      else break;
+    }
+    return g;
+  }, [groupStarts, state.progress]);
+
+  // 重绘范围终点：暂停点所在路径组的结束位置。
+  // 回溯区间 = [回溯组起点, 暂停点所在组结束)，即从回溯点到暂停点的全部内容。
+  const pauseGroupEnd = React.useMemo(() => {
+    if (pauseGroupIdx < 0) return 0;
+    return pauseGroupIdx + 1 < groupStarts.length
+      ? groupStarts[pauseGroupIdx + 1]
+      : (plan?.motions.length ?? groupStarts[pauseGroupIdx]);
+  }, [pauseGroupIdx, groupStarts, plan]);
+
+  const rewindRangeFor = React.useCallback(
+    (g: number) => ({ from: groupStarts[g], to: pauseGroupEnd }),
+    [groupStarts, pauseGroupEnd],
+  );
+
+  // 进入暂停时，初始化回溯组为当前组，并在预览中高亮重绘区间
+  React.useEffect(() => {
+    if (state.paused && !state.isSimulating && pauseGroupIdx >= 0) {
+      setRewindGroup(pauseGroupIdx);
+      dispatch({ type: "SET_REWIND_RANGE", value: rewindRangeFor(pauseGroupIdx) });
+    }
+  }, [state.paused, state.isSimulating, pauseGroupIdx, rewindRangeFor, dispatch]);
+
+  // 绘制结束/取消后清除回溯高亮（补画模式下保留：高亮跟随双滑块选择）
+  React.useEffect(() => {
+    if (state.progress == null && !state.redrawMode) {
+      dispatch({ type: "SET_REWIND_RANGE", value: null });
+    }
+  }, [state.progress, state.redrawMode, dispatch]);
+
+  const onRewindSliderChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const g = parseInt(e.target.value, 10);
+    setRewindGroup(g);
+    if (pauseGroupIdx >= 0) {
+      dispatch({ type: "SET_REWIND_RANGE", value: rewindRangeFor(g) });
+    }
+  };
+
+  const rewindAndResume = () => {
+    if (rewindGroup < groupStarts.length) {
+      // 记录本次重绘区间（红色标记），预览中随重绘进度从橙色变为红色
+      dispatch({ type: "SET_REDRAWN_RANGES", value: [...(state.redrawnRanges ?? []), rewindRangeFor(rewindGroup)] });
+      driver.resume(groupStarts[rewindGroup]);
+      // 保留 rewindRange：重绘进行中预览继续高亮尚未画到的部分
+    }
+  };
+
+  // --- 补画模式（绘制结束后，仅重绘选中的路径区间） ---
+  const [redrawG0, setRedrawG0] = useState(0);
+  const [redrawG1, setRedrawG1] = useState(0);
+  const groupCount = groupStarts.length;
+  // 第 g 条路径的动作区间终点（不含），即下一条路径的起点
+  const groupEnd = React.useCallback(
+    (g: number) => (g + 1 < groupStarts.length ? groupStarts[g + 1] : (plan?.motions.length ?? groupStarts[g])),
+    [groupStarts, plan],
+  );
+  const redrawMotionRange = React.useCallback(
+    (g0: number, g1: number) => ({ from: groupStarts[g0], to: groupEnd(g1) }),
+    [groupStarts, groupEnd],
+  );
+  const enterRedrawMode = () => {
+    if (groupCount === 0 || plan == null) return;
+    if (planSignature(plan) !== lastPlotSig.current) {
+      const ok = window.confirm(
+        "当前规划与上次绘制时不一致（修改过选项或重新加载了文件），\n区间编号可能无法对应实际笔迹。是否仍要继续？",
+      );
+      if (!ok) return;
+    }
+    const g1 = groupCount - 1;
+    setRedrawG0(0);
+    setRedrawG1(g1);
+    dispatch({ type: "SET_REDRAW_MODE", value: true });
+    dispatch({ type: "SET_REWIND_RANGE", value: redrawMotionRange(0, g1) });
+  };
+  const exitRedrawMode = () => {
+    dispatch({ type: "SET_REDRAW_MODE", value: false });
+    dispatch({ type: "SET_REWIND_RANGE", value: null });
+  };
+  const onRedrawFromChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const g0 = Math.min(parseInt(e.target.value, 10), redrawG1);
+    setRedrawG0(g0);
+    dispatch({ type: "SET_REWIND_RANGE", value: redrawMotionRange(g0, redrawG1) });
+  };
+  const onRedrawToChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const g1 = Math.max(parseInt(e.target.value, 10), redrawG0);
+    setRedrawG1(g1);
+    dispatch({ type: "SET_REWIND_RANGE", value: redrawMotionRange(redrawG0, g1) });
+  };
+  const startRedraw = () => {
+    if (plan == null) return;
+    dispatch({ type: "SET_REDRAW_MODE", value: false });
+    // 记录补画区间：进行中橙色高亮未画到部分，完成后红色保留
+    dispatch({
+      type: "SET_REDRAWN_RANGES",
+      value: [...(state.redrawnRanges ?? []), redrawMotionRange(redrawG0, redrawG1)],
+    });
+    try {
+      const r = driver.redraw(plan, groupStarts[redrawG0], groupEnd(redrawG1)) as unknown;
+      if (r instanceof Promise) {
+        r.catch((e: unknown) => alert(`补画失败：${e instanceof Error ? e.message : String(e)}`));
+      }
+    } catch (e) {
+      alert(`补画失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  const homePen = () => {
+    // 抬笔回原点：位置未知（如服务重启）时恢复已知笔位置，供补画使用
+    try {
+      const r = driver.homePen(plan) as unknown;
+      if (r instanceof Promise) {
+        r.catch((e: unknown) => alert(`笔回原点失败：${e instanceof Error ? e.message : String(e)}`));
+      }
+    } catch (e) {
+      alert(`笔回原点失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const simRef = React.useRef<{ timer: number | null; cancelled: boolean }>({ timer: null, cancelled: false });
   const simulate = React.useCallback((simPlan: Plan) => {
     const motions = simPlan.motions;
     let idx = 0;
     simRef.current.cancelled = false;
     dispatch({ type: "SET_SIMULATING", value: true });
+    dispatch({ type: "SET_DRAWN_WATERMARK", value: null });
     const advance = () => {
       if (simRef.current.cancelled || idx >= motions.length) {
         dispatch({ type: "SET_PROGRESS", motionIdx: null });
@@ -1095,7 +1260,9 @@ function PlotButtons({
           <div className="progress-bar">
             <div className="progress-bar-fill" style={{ width: pct + "%" }} />
           </div>
-          <span className="progress-bar-label">{pct}%</span>
+          <span className="progress-bar-label">
+            {pct}%{pauseGroupIdx >= 0 && ` · 路径 ${pauseGroupIdx + 1}/${groupStarts.length}`}
+          </span>
         </div>
       )}
       <div className="button-row">
@@ -1115,7 +1282,7 @@ function PlotButtons({
       </div>
       {isPlanning ? (
         <button type="button" className="replan-button" disabled={true}>
-          Replanning...
+          重新规划中...
         </button>
       ) : (
         <button
@@ -1134,7 +1301,7 @@ function PlotButtons({
           onClick={state.paused ? resume : pause}
           disabled={plan == null || state.progress == null}
         >
-          {state.paused ? "继续" : "暂停"}
+          {state.paused ? "继续（原位）" : "暂停"}
         </button>
         <button
           type="button"
@@ -1142,9 +1309,87 @@ function PlotButtons({
           onClick={cancel}
           disabled={plan == null || state.progress == null}
         >
-          Cancel
+          取消
         </button>
       </div>
+      {state.paused && !state.isSimulating && state.progress != null && plan && pauseGroupIdx >= 0 && (
+        <div className="rewind-controls">
+          <div className="rewind-info">
+            暂停中 — 已绘制第 {pauseGroupIdx + 1} / {groupStarts.length} 条路径。拖动滑块选择回溯位置，重绘的线条将在预览中标红。
+          </div>
+          <div className="rewind-slider-row">
+            <input
+              type="range"
+              className="rewind-slider"
+              min={0}
+              max={pauseGroupIdx}
+              step={1}
+              value={rewindGroup}
+              onChange={onRewindSliderChange}
+            />
+            <span className="rewind-slider-label">第 {rewindGroup + 1} 条</span>
+          </div>
+          <div className="button-row">
+            <button type="button" className="cancel-button cancel-button--active" onClick={rewindAndResume}>
+              从第 {rewindGroup + 1} 条路径重绘并继续
+            </button>
+          </div>
+        </div>
+      )}
+      {state.progress == null && !state.isSimulating && plan && groupCount > 0 && !state.redrawMode && (
+        <div className="button-row">
+          <button type="button" onClick={enterRedrawMode}>
+            补画模式…
+          </button>
+          <button type="button" onClick={homePen} title="抬笔回到起始点。补画前若笔位置未知（如服务重启过），请先执行此项">
+            笔回原点
+          </button>
+        </div>
+      )}
+      {state.redrawMode && state.progress == null && !state.isSimulating && groupCount > 0 && (
+        <div className="rewind-controls redraw-mode-controls">
+          <div className="rewind-info">
+            补画模式 — 拖动两个滑块选择要补画的路径区间（第 {redrawG0 + 1} 至 {redrawG1 + 1} 条），预览中以橙色高亮。确认后点击「补画选中区间」。
+          </div>
+          <div className="rewind-slider-row">
+            <span className="rewind-slider-label">起点</span>
+            <input
+              type="range"
+              className="rewind-slider"
+              min={0}
+              max={groupCount - 1}
+              step={1}
+              value={redrawG0}
+              onChange={onRedrawFromChange}
+            />
+            <span className="rewind-slider-label">第 {redrawG0 + 1} 条</span>
+          </div>
+          <div className="rewind-slider-row">
+            <span className="rewind-slider-label">终点</span>
+            <input
+              type="range"
+              className="rewind-slider"
+              min={redrawG0}
+              max={groupCount - 1}
+              step={1}
+              value={redrawG1}
+              onChange={onRedrawToChange}
+            />
+            <span className="rewind-slider-label">第 {redrawG1 + 1} 条</span>
+          </div>
+          <div className="button-row">
+            <button type="button" className="cancel-button cancel-button--active" onClick={startRedraw}>
+              补画选中区间
+            </button>
+            <button type="button" onClick={homePen} title="抬笔回到起始点。补画前若笔位置未知（如服务重启过），请先执行此项">
+              笔回原点
+            </button>
+            <button type="button" onClick={exitRedrawMode}>
+              退出补画
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1211,8 +1456,9 @@ function PlanConfig({ state }: { state: State }) {
           </label>
       </form>
       <div className="horizontal-labels">
-        <label title="point-joining radius (mm)">
-          <img src={pointJoinRadiusIcon} alt="point-joining radius (mm)" />
+        <label title="合并同一路径中相近的点（去重），单位 mm">
+          <span className="horizontal-labels__title">点合并半径 (mm)</span>
+          <img src={pointJoinRadiusIcon} alt="点合并半径 (mm)" />
           <input
             type="number"
             value={state.planOptions.pointJoinRadius}
@@ -1221,8 +1467,9 @@ function PlanConfig({ state }: { state: State }) {
             onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { pointJoinRadius: Number(e.target.value) } })}
           />
         </label>
-        <label title="path-joining radius (mm)">
-          <img src={pathJoinRadiusIcon} alt="path-joining radius (mm)" />
+        <label title="合并端点相近的不同路径（减少抬笔），单位 mm">
+          <span className="horizontal-labels__title">路径合并半径 (mm)</span>
+          <img src={pathJoinRadiusIcon} alt="路径合并半径 (mm)" />
           <input
             type="number"
             value={state.planOptions.pathJoinRadius}
@@ -1348,21 +1595,26 @@ type PortSelectorProps = {
 
 function PortSelector({ driver, setDriver, hardware }: PortSelectorProps) {
   const [initializing, setInitializing] = useState(false);
+  const connectingRef = useRef(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: setDriver is stable
   useEffect(() => {
+    if (connectingRef.current) return; // Prevent concurrent connection attempts
+    if (driver?.connected) return; // Already connected
+    connectingRef.current = true;
     (async () => {
-      if (driver?.connected) return; // Already connected
       setInitializing(true);
       try {
         const ports = await navigator.serial.getPorts(); // re-connect to previously established connection
         const port = ports[0];
         if (port) {
           console.log("connecting to", port);
-          // get the first
           setDriver(await WebSerialDriver.connect(port, hardware));
         }
+      } catch (e) {
+        console.error("Auto-reconnect failed:", e);
       } finally {
         setInitializing(false);
+        connectingRef.current = false;
       }
     })();
   }, [driver, hardware]);
@@ -1409,6 +1661,20 @@ function Root() {
   const { isPlanning, plan, setPlan } = usePlan(state.paths, state.planOptions);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
 
+  // 计划变更（切换图层、重新规划、载入新文件）后，旧的重绘/回溯区间记录
+  // 基于旧计划的运动索引，不再对应新计划的路径，必须全部清除——
+  // 新图层应从全白（未处理）状态开始显示。
+  const lastPlanRef = React.useRef<Plan | null>(null);
+  useEffect(() => {
+    if (plan !== lastPlanRef.current) {
+      lastPlanRef.current = plan;
+      dispatch({ type: "SET_REDRAWN_RANGES", value: [] });
+      dispatch({ type: "SET_REWIND_RANGE", value: null });
+      dispatch({ type: "SET_REDRAW_MODE", value: false });
+      dispatch({ type: "SET_DRAWN_WATERMARK", value: null });
+    }
+  }, [plan]);
+
   useEffect(() => {
     window.localStorage.setItem("planOptions", JSON.stringify(state.planOptions));
   }, [state.planOptions]);
@@ -1432,11 +1698,6 @@ function Root() {
     driver.onplan = (plan: Plan) => {
       setPlan(plan);
     };
-    if (driver instanceof Bit2AtomDriver) {
-      driver.svgioEnabled = (enabled: boolean) => {
-        dispatch({ type: "SET_SVGIO_OPTION", value: { enabled } });
-      };
-    }
   }, [driver, state.planOptions]);
 
   useEffect(() => {
@@ -1475,7 +1736,7 @@ function Root() {
     if (!plan) return;
     const stepsPerMm = !isBuiltinHardware(state.planOptions.hardware)
       ? computeStepsPerMm(state.planOptions.driveParams)
-      : Device(state.planOptions.hardware).stepsPerMm;
+      : getDevice(state.planOptions.hardware).stepsPerMm;
     const svg = planToSvg(plan, stepsPerMm, state.planOptions.paperSize);
     const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1540,18 +1801,18 @@ function Root() {
 
   return (
     <DispatchContext.Provider value={dispatch}>
-      <div className={`root ${state.connected ? "connected" : "已断开"}`}>
+      <div className={`root ${state.connected ? "connected" : "disconnected"}`}>
         <div className="control-panel">
-          <div className="saxi-title">
+          <div className="bit2atom-title">
             <img src={bit2atomLogo} alt="Bit2AtomBot" className="title-logo" />
           </div>
           {!IS_WEB && (
             <div className={state.connected && state.deviceInfo?.path ? "info" : "info-disconnected"}>
               {state.connected
                 ? state.deviceInfo?.path
-                  ? `已连接到 EBB (${state.deviceInfo.path}`
+                  ? `已连接到 EBB (${state.deviceInfo.path})`
                   : "未连接到 EBB"
-                : "disconnected"}
+                : "未连接"}
             </div>
           )}
           {IS_WEB && (
@@ -1559,7 +1820,7 @@ function Root() {
             <PortSelector
               driver={driver}
               setDriver={setDriver}
-              hardware={(driver as WebSerialDriver)?.ebb?.hardware ?? state.planOptions.hardware}
+              hardware={(driver as WebSerialDriver)?.ebb?.hardware ?? (state.planOptions.hardware as Hardware)}
             />
             </div>
           )}
@@ -1600,14 +1861,6 @@ function Root() {
               </label>
             </div>
           </details>
-          {state.svgIoOptions.enabled && (
-            <details>
-              <summary className="section-header">AI</summary>
-              <div className="section-body">
-                <SvgIoOptions state={state} />
-              </div>
-            </details>
-          )}
           <div className="spacer" />
           <div className="control-panel-bottom">
             <div className="section-header">绘图设置</div>
@@ -1643,16 +1896,8 @@ function Root() {
           {state.paths && state.paths.length > 0 && (
             <button
               type="button"
+              className="clear-svg-btn"
               onClick={handleClear}
-              style={{
-                position: "absolute",
-                top: "10px",
-                right: "10px",
-                zIndex: 10,
-                width: "auto",
-                padding: "4px 12px",
-                fontSize: "12px",
-              }}
             >
               清除 SVG
             </button>
@@ -1694,8 +1939,6 @@ function DragTarget({ handleFile }: { handleFile: (file: File) => void }) {
   );
 }
 
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-// biome-ignore lint/style/noNonNullAssertion: static element
 createRoot(document.getElementById("app")!).render(<Root />);
 
 /**
@@ -1707,12 +1950,28 @@ function readSvg(svgString: string): Path[] {
   const parser = new DOMParser();
   const doc = parser.parseFromString(svgString, "image/svg+xml");
   const svg = doc.querySelector("svg");
+  // Enumerate shapes exactly like flatten-svg does internally (svg/g/a
+  // recursion; geometry elements yielded; other containers like <defs>
+  // skipped). This guarantees a 1:1 order correspondence with the
+  // flattened output below.
+  const shapes = [...enumShapes(svg)];
+  // Pre-compute the cumulative transform of every element, in root
+  // viewBox user units. flatten-svg (v0.3.0) gets these from getCTM(),
+  // which returns the IDENTITY matrix for an SVG parsed via DOMParser
+  // (never attached to the document) — silently dropping every
+  // <g transform="..."> in the file (e.g. Affinity Designer exports).
+  // When the SVG *is* attached, getCTM() would additionally include the
+  // viewBox→viewport scale, which we don't want either: the plotter
+  // expects coordinates in root user units (1 unit = 1/96 inch, see
+  // massager.ts). So we compute the matrices ourselves and apply them
+  // to the flattened points afterwards.
+  const matMap = collectSvgMatrices(svg);
   const paths = flattenSVG(svg);
 
   // flattenSVG (v0.3.0) does NOT extract fill/fillRule/groupOrder.
   // We patch them here from the SVG elements.
   let pathIdx = 0;
-  for (const shape of svg.querySelectorAll("rect, circle, ellipse, path, line, polyline, polygon")) {
+  for (const shape of shapes) {
     if (pathIdx >= paths.length) break;
     const fill = shape.getAttribute("fill") || (shape as SVGElement).style?.fill || null;
     const fillRule = shape.getAttribute("fill-rule")
@@ -1729,15 +1988,152 @@ function readSvg(svgString: string): Path[] {
         if (pd) subpaths = pd.filter((c: any) => c.type === "M").length;
       } catch { /* use default 1 */ }
     }
+    const m = matMap.get(shape) ?? SVG_IDENTITY;
     for (let s = 0; s < subpaths && pathIdx < paths.length; s++) {
       paths[pathIdx] = {
         ...paths[pathIdx],
         fill: fill && fill !== "" ? fill : null,
         fillRule: fillRule && fillRule !== "" ? fillRule : "nonzero",
-        groupOrder: paths[pathIdx].groupId ? parseInt(paths[pathIdx].groupId) || 0 : 0,
+        groupOrder: paths[pathIdx].groupId ? parseInt(paths[pathIdx].groupId, 10) || 0 : 0,
       };
+      applyMatrixToPath(paths[pathIdx], m);
       pathIdx++;
     }
   }
   return paths;
+}
+
+// --- Full SVG transform support --------------------------------------------
+// See readSvg() for the rationale. flatten-svg returns points transformed
+// only by getCTM() (identity here), so we apply the cumulative `transform`
+// attribute matrices to the flattened points ourselves.
+//
+// Supported: matrix/translate/scale/rotate/skewX/skewY transform lists,
+// nested and mixed, on <svg>/<g>/<a> and geometry elements.
+// Not supported (unchanged from before): <use>/<defs> indirection; nested
+// <svg> x/y/width/height viewport setup (treated like <g>).
+//
+// flatten-svg point format: [x, y] arrays that also carry .x/.y properties
+// (set by its internal helper), so both representations are updated.
+
+type SvgMatrix = { a: number; b: number; c: number; d: number; e: number; f: number };
+
+const SVG_IDENTITY: SvgMatrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+
+function mulSvgMatrix(m1: SvgMatrix, m2: SvgMatrix): SvgMatrix {
+  // Equivalent to the transform list "m1 m2": m2 is applied to points first.
+  return {
+    a: m1.a * m2.a + m1.c * m2.b,
+    b: m1.b * m2.a + m1.d * m2.b,
+    c: m1.a * m2.c + m1.c * m2.d,
+    d: m1.b * m2.c + m1.d * m2.d,
+    e: m1.a * m2.e + m1.c * m2.f + m1.e,
+    f: m1.b * m2.e + m1.d * m2.f + m1.f,
+  };
+}
+
+const SVG_NUM_RE = /[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][-+]?\d+)?/g;
+
+function parseSvgTransform(transform: string): SvgMatrix {
+  let m = SVG_IDENTITY;
+  const re = /(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)/g;
+  let match: RegExpExecArray | null = re.exec(transform);
+  while (match !== null) {
+    const nums = (match[2].match(SVG_NUM_RE) ?? []).map(Number);
+    const rad = (v: number) => (v * Math.PI) / 180;
+    let t: SvgMatrix = SVG_IDENTITY;
+    switch (match[1]) {
+      case "matrix":
+        if (nums.length < 6) throw new Error(`Invalid matrix() in transform: ${match[0]}`);
+        t = { a: nums[0], b: nums[1], c: nums[2], d: nums[3], e: nums[4], f: nums[5] };
+        break;
+      case "translate":
+        t = { a: 1, b: 0, c: 0, d: 1, e: nums[0] ?? 0, f: nums[1] ?? 0 };
+        break;
+      case "scale": {
+        const sx = nums[0] ?? 1;
+        const sy = nums[1] ?? sx;
+        t = { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 };
+        break;
+      }
+      case "rotate": {
+        const cos = Math.cos(rad(nums[0] ?? 0));
+        const sin = Math.sin(rad(nums[0] ?? 0));
+        if (nums.length >= 3) {
+          const cx = nums[1];
+          const cy = nums[2];
+          t = { a: cos, b: sin, c: -sin, d: cos, e: cx - cos * cx + sin * cy, f: cy - sin * cx - cos * cy };
+        } else {
+          t = { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 };
+        }
+        break;
+      }
+      case "skewX":
+        t = { a: 1, b: 0, c: Math.tan(rad(nums[0] ?? 0)), d: 1, e: 0, f: 0 };
+        break;
+      case "skewY":
+        t = { a: 1, b: Math.tan(rad(nums[0] ?? 0)), c: 0, d: 1, e: 0, f: 0 };
+        break;
+    }
+    m = mulSvgMatrix(m, t);
+    match = re.exec(transform);
+  }
+  return m;
+}
+
+// Per SVG spec, `transform` only takes effect on these element types.
+function hasSvgTransform(el: Element): boolean {
+  const tag = el.nodeName.toLowerCase();
+  return tag === "svg" || tag === "g" || tag === "a"
+    || tag === "path" || tag === "rect" || tag === "circle" || tag === "ellipse"
+    || tag === "line" || tag === "polyline" || tag === "polygon"
+    || tag === "text" || tag === "use" || tag === "image" || tag === "switch";
+}
+
+function collectSvgMatrices(svg: Element): Map<Element, SvgMatrix> {
+  const map = new Map<Element, SvgMatrix>();
+  const walk = (el: Element, parentM: SvgMatrix): void => {
+    const t = hasSvgTransform(el) ? el.getAttribute("transform") : null;
+    const m = t ? mulSvgMatrix(parentM, parseSvgTransform(t)) : parentM;
+    map.set(el, m);
+    for (const child of el.children) walk(child, m);
+  };
+  walk(svg, SVG_IDENTITY);
+  return map;
+}
+
+// Mirror of flatten-svg's internal shape enumeration: recurse into
+// svg/g/a, yield geometry elements, skip everything else (defs, text
+// content, ...). Same traversal order as flattenSVG()'s output.
+function* enumShapes(el: Element): Generator<SVGGraphicsElement> {
+  switch (el.nodeName.toLowerCase()) {
+    case "svg":
+    case "g":
+    case "a":
+      for (const child of el.children) yield* enumShapes(child);
+      break;
+    case "rect":
+    case "circle":
+    case "ellipse":
+    case "path":
+    case "line":
+    case "polyline":
+    case "polygon":
+      yield el as SVGGraphicsElement;
+      break;
+  }
+}
+
+function applyMatrixToPath(path: Path, m: SvgMatrix): void {
+  if (m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1 && m.e === 0 && m.f === 0) return;
+  // flatten-svg points are [x, y] arrays that also carry .x/.y properties.
+  type FlattenPt = { 0: number; 1: number; x: number; y: number };
+  for (const pt of path.points as unknown as FlattenPt[]) {
+    const x = pt[0];
+    const y = pt[1];
+    pt[0] = m.a * x + m.c * y + m.e;
+    pt[1] = m.b * x + m.d * y + m.f;
+    pt.x = pt[0];
+    pt.y = pt[1];
+  }
 }

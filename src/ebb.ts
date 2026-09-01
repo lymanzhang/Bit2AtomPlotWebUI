@@ -63,8 +63,6 @@ export class EBB {
   public port: SerialPort;
   private commandQueue: CommandGenerator[];
   private writer: WritableStreamDefaultWriter<Uint8Array>;
-  // biome-ignore lint/correctness/noUnusedPrivateClassMembers: used in constructor
-  private readableClosed: Promise<void>;
   public hardware: Hardware;
 
   private microsteppingMode = MicrostepMode.DISABLED;
@@ -74,6 +72,17 @@ export class EBB {
 
   private cachedFirmwareVersion: [number, number, number] | undefined = undefined;
 
+  /**
+   * Timestamp of the last cancel() that flushed a non-empty queue, if any.
+   * Flushed commands' responses may still be in flight; a settle delay before
+   * the next command prevents an orphan response from being misattributed to
+   * the newly queued command (which would desync the whole line protocol).
+   */
+  private flushedAt: number | null = null;
+
+  /** Quiet period to wait after a queue flush before sending new commands. */
+  private static readonly FLUSH_SETTLE_MS = 500;
+
   public constructor(port: SerialPort, hardware: Hardware = "v3") {
     this.hardware = hardware;
     this.port = port;
@@ -82,7 +91,7 @@ export class EBB {
 
     let buffer = "";
 
-    this.readableClosed = port.readable
+    void port.readable
       .pipeThrough(new TextDecoderStream() as TransformStream<Uint8Array, string>)
       .pipeTo(
         new WritableStream({
@@ -237,8 +246,14 @@ export class EBB {
     }
   }
 
-  /** Reject all pending commands immediately **/
+  /** Reject all pending commands immediately. Responses for the flushed
+   * commands may still arrive afterwards; they are logged as "unexpected
+   * data" and discarded, and run() enforces a settle delay so the next real
+   * command cannot accidentally consume them. */
   public cancel(): void {
+    if (this.commandQueue.length > 0) {
+      this.flushedAt = Date.now();
+    }
     while (this.commandQueue.length > 0) {
       this.commandQueue.shift()?.reject(new Error("Cancelled"));
     }
@@ -350,13 +365,18 @@ export class EBB {
     return this.command(`XM,${Math.floor(duration * 1000)},${x},${y}`);
   }
 
-  public async waitUntilMotorsIdle(): Promise<void> {
+  public async waitUntilMotorsIdle(timeoutMs = 30000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const [, commandStatus, _motor1Status, _motor2Status, fifoStatus] = (await this.query("QM")).split(",");
       if (commandStatus === "0" && fifoStatus === "0") {
         break;
       }
+      if (Date.now() > deadline) {
+        throw new Error(`Timed out after ${timeoutMs}ms waiting for motors to go idle`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
 
@@ -551,16 +571,30 @@ export class EBB {
     return [initialRate, deltaR];
   }
 
-  private run<T>(g: (this: EBB) => Iterator<T>): Promise<T> {
+  private async run<T>(g: (this: EBB) => Iterator<T>): Promise<T> {
+    // After a queue flush, wait out the settle period so any in-flight orphan
+    // responses arrive (and get discarded as "unexpected data") before this
+    // command's own response can be matched against the queue.
+    if (this.flushedAt != null) {
+      const remaining = EBB.FLUSH_SETTLE_MS - (Date.now() - this.flushedAt);
+      this.flushedAt = null;
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
+    }
     const cmd = g.call(this);
     const d = cmd.next();
     if (d.done) {
-      return Promise.resolve(d.value);
+      return d.value;
     }
     this.commandQueue.push(cmd);
-    return new Promise((resolve, reject) => {
+    const promise = new Promise<T>((resolve, reject) => {
       cmd.resolve = resolve;
       cmd.reject = reject;
     });
+    // Callers attach their own handlers; this extra catch only prevents
+    // unhandled-rejection noise when the queue is force-flushed via cancel().
+    promise.catch(() => {});
+    return promise;
   }
 }

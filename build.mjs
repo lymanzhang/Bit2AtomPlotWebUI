@@ -17,9 +17,9 @@ const buildOptions = {
   tsconfig: "tsconfig.ui.json",
   loader: { ".svg": "file" },
   define: {
-    IS_WEB: (process.env.IS_WEB !== "0").toString(),
-    "process.env.DEBUG_BIT2ATOM_COMMANDS": JSON.stringify(process.env.DEBUG_SAXI_COMMANDS ?? ""),
-    "process.env.BIT2ATOM_FIFO_DEPTH": JSON.stringify(process.env.SAXI_FIFO_DEPTH ?? ""),
+    IS_WEB: (process.env.IS_WEB === "1").toString(),
+    "process.env.DEBUG_BIT2ATOM_COMMANDS": JSON.stringify(process.env.DEBUG_BIT2ATOM_COMMANDS ?? ""),
+    "process.env.BIT2ATOM_FIFO_DEPTH": JSON.stringify(process.env.BIT2ATOM_FIFO_DEPTH ?? ""),
   },
   plugins: [
     inlineWorker(),
