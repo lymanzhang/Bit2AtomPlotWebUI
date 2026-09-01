@@ -11,7 +11,13 @@
 
 - **运行日志落盘**：服务端每次启动自动将日志写入 `logs/bit2atombot-<日期>-<时间>.log`，每行带本地时间戳与级别（INFO/WARN/ERROR），包含绘制/补画耗时、归位分步耗时、通信探活等性能数据，便于事后分析评估；自动保留最近 50 个文件。`BIT2ATOM_LOG_DIR` 可自定义目录，`BIT2ATOM_NO_FILE_LOG=1` 可禁用
 
-## [0.17.2] - 2026-08-31
+## [0.17.2] - 2026-09-01
+
+> 已发布至 [GitHub Releases](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.17.2)（tag `v0.17.2`，附件 `bit2atombot-0.17.2-src.zip`）。发布流程与注意事项见 [docs/RELEASE.md](docs/RELEASE.md)。
+
+### 发布备注
+
+- **发布包 zip 修复**：原 `Compress-Archive` 打包的 zip 条目使用反斜杠路径分隔符（违反 zip 规范），Linux/macOS 解压后无法使用；发布前改用 .NET `ZipArchive` 以正斜杠条目重新打包（84 个条目验证通过，0.6 MB），并同步了最新 README/CHANGELOG 进包
 
 ### Fixed
 

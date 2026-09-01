@@ -346,7 +346,7 @@ cross-env IS_WEB=1 npm run build:ui
 
 版本发布记录见 [CHANGELOG.md](CHANGELOG.md)。
 
-**最新版本 v0.17.2**（2026-08-31）：修复补画后不归位的问题（EBB `EM` 命令重置原点导致 `HM` 失效，改用抬笔行程归位）；归位全流程加固（通信探活、命令超时、失败恢复）；浏览器直连模式断连保护；归位耗时统计日志；lint 零告警。
+**最新版本 [v0.17.2](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.17.2)**（2026-09-01 发布）：修复补画后不归位的问题（EBB `EM` 命令重置原点导致 `HM` 失效，改用抬笔行程归位）；归位全流程加固（通信探活、命令超时、失败恢复）；浏览器直连模式断连保护；归位耗时统计日志；lint 零告警。
 
 ---
 
