@@ -1,0 +1,21 @@
+package-lock.json
+  s_a9fe4b0b3994f6::t_d220979b99c6ec 3,9
+package.json
+  s_a9fe4b0b3994f6::t_c05d09f08f4c5d 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "662b328bc176856b1b0d1cf65b193ddbe6911873",
+  "prompts": {},
+  "sessions": {
+    "s_a9fe4b0b3994f6": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a9425838b527150b44554fe",
+        "model": "glm-5.3__dev"
+      },
+      "human_author": "lymanzhang <zhanglliqun@gmail.com>"
+    }
+  }
+}
