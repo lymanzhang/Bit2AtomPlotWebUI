@@ -346,7 +346,7 @@ cross-env IS_WEB=1 npm run build:ui
 
 版本发布记录见 [CHANGELOG.md](CHANGELOG.md)。
 
-**最新版本 [v0.17.2](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.17.2)**（2026-09-01 发布）：修复补画后不归位的问题（EBB `EM` 命令重置原点导致 `HM` 失效，改用抬笔行程归位）；归位全流程加固（通信探活、命令超时、失败恢复）；浏览器直连模式断连保护；归位耗时统计日志；lint 零告警。
+**最新版本 [v0.18.0](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.18.0)**（2026-09-07 发布）：修复长时绘制中串口写入失败（错误码 31）导致服务静默崩溃的问题（写入错误注入命令队列 + `error` 事件监听 + unhandled rejection 兜底）；修复 Affinity 导出 SVG（单 `<path>` 多 `M` 子路径）在预览/绘制中拆成两块的矩阵变换丢失问题；新增运行日志落盘（`logs/` 目录，自动保留最近 50 个）。
 
 ---
 

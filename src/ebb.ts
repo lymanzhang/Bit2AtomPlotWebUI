@@ -125,10 +125,13 @@ export class EBB {
         }),
       )
       .catch((error) => {
-        // Swallow premature close error; the disconnect handler takes care of it
-        if (error.code !== "ERR_STREAM_PREMATURE_CLOSE") {
-          throw error;
+        // Surface read-stream failures through the command queue instead of
+        // re-throwing (which would leak an unhandled rejection and kill the
+        // process). Premature close is normal disconnect handling.
+        if (error?.code !== "ERR_STREAM_PREMATURE_CLOSE") {
+          console.error(`[bit2atombot] EBB read stream error: ${(error as Error).message}`);
         }
+        this.abortPending(error as Error);
       });
   }
 
@@ -157,7 +160,14 @@ export class EBB {
       console.log(`writing: ${str}`);
     }
     const encoder = new TextEncoder();
-    return this.writer.write(encoder.encode(str));
+    return this.writer.write(encoder.encode(str)).catch((err) => {
+      // A failed serial write (e.g. USB glitch → "GetOverlappedResult" error
+      // 31) leaves the stream errored. Surface the failure through the command
+      // queue so callers get a real rejection; letting the promise leak would
+      // be an unhandled rejection, which Node treats as a fatal error.
+      console.error(`[bit2atombot] serial write failed: ${(err as Error).message}`);
+      this.abortPending(err as Error);
+    });
   }
 
   /** Send a raw command to the EBB and expect a single line in return, without an "OK" line to terminate. */
@@ -258,6 +268,19 @@ export class EBB {
       this.commandQueue.shift()?.reject(new Error("Cancelled"));
     }
   }
+
+  /** Reject all pending commands with the given error. Used when the port
+   * itself fails (serial write/read error): responses will never arrive, so
+   * waiting commands must fail fast with the real cause. */
+  private abortPending(err: Error): void {
+    if (this.commandQueue.length > 0) {
+      this.flushedAt = Date.now();
+    }
+    while (this.commandQueue.length > 0) {
+      this.commandQueue.shift()?.reject(err);
+    }
+  }
+
   public async enableMotors(microsteppingMode: RunningMicrostepMode): Promise<void> {
     this.microsteppingMode = microsteppingMode;
     await this.command(`EM,${microsteppingMode},${microsteppingMode}`);

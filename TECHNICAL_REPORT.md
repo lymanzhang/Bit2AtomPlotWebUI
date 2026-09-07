@@ -128,7 +128,7 @@ Bit2AtomBot 是一款基于 Web 的笔式绘图仪控制系统，支持 AxiDraw 
 
 - `collectSvgMatrices(svg)`：从根元素深度优先遍历，对每个图形元素复合其祖先链上的全部变换，产出 `Map<Element, SvgMatrix>`
 - `parseTransform()`：完整支持 SVG 规范全部 6 种变换函数——`matrix` / `translate` / `scale` / `rotate`（含 `rotate(a cx cy)` 三参数形式）/ `skewX` / `skewY`，以及空格/逗号混合分隔的参数格式
-- `enumShapes()`：按文档顺序枚举图形元素（`rect`/`circle`/`ellipse`/`path`/`line`/`polyline`/`polygon`），保证与 `flatten-svg` 的输出路径一一对应；对多子路径的 `<path>` 通过 `getPathData({normalize:true})` 统计 `M` 命令数进行对齐
+- `enumShapes()`：按文档顺序枚举图形元素（`rect`/`circle`/`ellipse`/`path`/`line`/`polyline`/`polygon`），保证与 `flatten-svg` 的输出路径一一对应；对多子路径的 `<path>` 直接解析 `d` 属性统计 `M`/`m` 命令数进行对齐（早期版本依赖 `SVGPathElement.getPathData()`，但该方法并非标准浏览器 API，flatten-svg 内置的 polyfill 只导出独立函数、不改写原型，导致浏览器中子路径数恒为 1、复合路径除首个子路径外全部丢失矩阵变换—— Affinity 导出的单 `<path>` 含数百个 `M` 子路径的文件会被拆成两块）
 - `applyMatrixToPath()`：将复合矩阵应用到路径坐标点（含数组下标与 `x`/`y` 属性双写，兼容 flatten-svg 的点结构）
 
 **验证**：矩阵复合结果与浏览器原生 `getCTM()` 逐项比对，精度达 1e-9；Affinity 导出的多层嵌套 `matrix` 文件输出与独立 Python 烘焙脚本结果完全一致。
@@ -252,6 +252,7 @@ Bit2AtomBot 是一款基于 Web 的笔式绘图仪控制系统，支持 AxiDraw 
 - **超时全覆盖**：所有关键 EBB 调用（`executeMotion`/`setPenHeight`/`enableMotors`/`waitUntilMotorsIdle`/`HM`/行程归位等）均加 `withTimeout` 包装——常规命令 15s、长行程 150s，超时只在队列卡死/串口异常时触发；UI 抬笔/落笔/松弛电机等 fire-and-forget 操作（`setPenHeight`/`limp`）同样加超时与错误弹窗，杜绝 unhandled rejection
 - **断开连接即时恢复**（WebSerial 直连模式）：设备拔出或串口断开时，`handleDisconnection` 立即清空 EBB 命令队列（挂起命令马上 reject，而非干等 15~150s 超时）、将 `_lastPenPos` 置为未知、并 reject 暂停中 plot 循环等待的 unpause promise——绘制/补画循环立即落入 catch 触发 `oncancelled`，UI 不会卡在"绘制中/暂停中"状态
 - **异步异常兜底**：`/plot`、`/redraw` 的 `doPlot` 阶段（响应已发出后）捕获异常并广播 `cancelled`，UI 不会永久卡在"绘制中"；WebSerial 模式 `plot()`/`redraw()` 同样 catch 后 `oncancelled()` + 弹窗，`homePen()` 失败置位置为未知并重抛
+- **串口写入失败兜底**（服务端模式）：EBB 命令 generator 中的 `write()` 此前不等待串口写入结果，USB 瞬断等导致的写入失败（Windows 报 `GetOverlappedResult` 错误码 31）会以 unhandled rejection 击穿 Node 进程（默认视为致命错误），绘制数小时后服务静默退出。现 `write()` 捕获写入错误并注入命令队列（挂起命令立即以真实原因 reject，进入既有的超时/错误广播链），读流错误同样不再 re-throw；`SerialPortSerialPort` 补挂 NodeSerialPort `error` 事件监听（无监听器的 `error` 事件会同步抛出杀进程）；`startServer` 另挂 `process.on("unhandledRejection")` 日志兜底——杂散 rejection 只记日志，不再终止长时绘制任务
 
 **(4) 归位耗时监控**
 

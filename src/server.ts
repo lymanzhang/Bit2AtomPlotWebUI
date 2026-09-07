@@ -53,6 +53,12 @@ export async function startServer(
   maxPayloadSize = "200mb",
 ) {
   startRunLog();
+  // Last-resort safety net: a plot can run for hours, so a stray promise
+  // rejection must never kill the process (Node's default is fatal). Real
+  // failures are surfaced through command rejections/timeouts and logged here.
+  process.on("unhandledRejection", (reason) => {
+    console.error(`[bit2atombot] unhandled promise rejection: ${reason instanceof Error ? reason.message : reason}`);
+  });
   const app = express();
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   app.use("/", express.static(path.join(__dirname, "..", "ui")));

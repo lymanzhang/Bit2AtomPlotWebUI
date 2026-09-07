@@ -7,9 +7,22 @@
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-07
+
+> 已发布至 [GitHub Releases](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.18.0)（tag `v0.18.0`，附件 `bit2atombot-0.18.0-src.zip`）。发布流程与注意事项见 [docs/RELEASE.md](docs/RELEASE.md)。
+
+### Fixed
+
+- **串口写入失败导致服务静默崩溃**：绘制进行一段时间后 USB 瞬断/驱动错误（Windows 报 `Writing to COM port (GetOverlappedResult): Unknown error code 31`）时，EBB 命令层不等待串口写入结果，错误以 unhandled rejection 泄漏，Node 默认视为致命错误直接终止进程——长时绘制中服务静默退出。现写入失败会立即以真实原因 reject 所有挂起命令（进入既有的超时/错误广播链，绘制中止并提示），读流错误同样不再 re-throw；串口适配层补挂 `error` 事件监听；服务端另加 `unhandledRejection` 日志兜底，杂散 rejection 不再杀死进程。回归测试覆盖「写入失败→命令拒绝→无 unhandled rejection」
+- **复合路径矩阵变换丢失（Affinity 导出文件拆成两块）**：`readSvg()` 此前依赖非标准的 `SVGPathElement.getPathData()` 统计复合路径子路径数——该方法在浏览器中并不存在（flatten-svg 的 polyfill 只导出独立函数、不改写原型），子路径数恒退化为 1，导致单个 `<path>` 含大量 `M` 子路径的文件（Affinity 典型导出格式）除第一个子路径外全部未应用 `<g>` 变换矩阵，预览/绘制结果被拆成两块。现改为直接解析 `d` 属性中的 `M`/`m` 命令计数，所有子路径均正确应用变换
+
 ### Added
 
 - **运行日志落盘**：服务端每次启动自动将日志写入 `logs/bit2atombot-<日期>-<时间>.log`，每行带本地时间戳与级别（INFO/WARN/ERROR），包含绘制/补画耗时、归位分步耗时、通信探活等性能数据，便于事后分析评估；自动保留最近 50 个文件。`BIT2ATOM_LOG_DIR` 可自定义目录，`BIT2ATOM_NO_FILE_LOG=1` 可禁用
+
+### 升级说明
+
+直接替换旧版目录即可，配置与计划文件无格式变更。若受「绘制中服务静默崩溃」困扰，本版本的串口错误兜底将显著提升长时绘制稳定性；Affinity 导出的 SVG 无需预处理即可正确加载。
 
 ## [0.17.2] - 2026-09-01
 

@@ -1980,13 +1980,21 @@ function readSvg(svgString: string): Path[] {
       || (svg as SVGElement).style?.fillRule
       || null;
     // Handle compound paths: a single <path> can produce multiple flattened paths
-    // (one per M command). Apply same fill/fillRule to all of them.
+    // (one per M command — flatten-svg pushes a new Path at every M). Apply the
+    // same fill/fillRule/transform to all of them.
+    // NOTE: SVGPathElement.getPathData() is NOT a standard browser API — the
+    // polyfill bundled in flatten-svg only exports a standalone function and
+    // never patches the prototype, so shape.getPathData is always undefined
+    // here and the subpath count silently collapsed to 1. That left every
+    // subpath after the first un-transformed (e.g. Affinity exports with a
+    // single <path> containing thousands of M subpaths split into two blocks).
+    // Count subpaths directly from the `d` attribute instead: each M/m command
+    // starts exactly one subpath (letters never occur inside path numbers).
     let subpaths = 1;
     if (shape.nodeName.toLowerCase() === "path") {
-      try {
-        const pd = (shape as any).getPathData?.({ normalize: true });
-        if (pd) subpaths = pd.filter((c: any) => c.type === "M").length;
-      } catch { /* use default 1 */ }
+      const d = shape.getAttribute("d") ?? "";
+      subpaths = (d.match(/[mM]/g) ?? []).length;
+      if (subpaths === 0) continue; // empty <path> produces no flattened paths
     }
     const m = matMap.get(shape) ?? SVG_IDENTITY;
     for (let s = 0; s < subpaths && pathIdx < paths.length; s++) {
