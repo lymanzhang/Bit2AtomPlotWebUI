@@ -1,6 +1,6 @@
 # 发布流程与注意事项
 
-以 v0.17.2（2026-09-01）的实际发布过程为基准整理。发布地址：<https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases>
+以 v0.17.2（2026-09-01）、v0.18.0（2026-09-07）的实际发布过程为基准整理。发布地址：<https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases>
 
 ## 前置条件
 
@@ -73,7 +73,7 @@ Remove-Item Env:\GH_TOKEN
 
 1. **`Compress-Archive` 的 zip 分隔符缺陷**：其生成的条目路径用反斜杠 `\`，违反 zip 规范——Windows 资源管理器和多数 Windows 工具能容错，但 Linux/macOS 解压会得到损坏的文件名/目录结构。**必须用 .NET ZipArchive 并显式 `Replace('\','/')`**。
 2. **PowerShell 不能直接调用 .NET 扩展方法**：`$arch.CreateEntryFromFile(...)` 会报 MethodNotFound，要用静态形式 `[System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($arch, ...)`。
-3. **gh 自动化需要令牌**：非交互环境报 `To use GitHub CLI in automation, set the GH_TOKEN environment variable`。用 `git credential fill` 取 Windows 凭据管理器中已存的令牌注入 `$env:GH_TOKEN`，用完即清，避免明文落盘。
+3. **gh 自动化需要令牌**：非交互环境报 `To use GitHub CLI in automation, set the GH_TOKEN environment variable`。用 `git credential fill` 取 Windows 凭据管理器中已存的令牌注入 `$env:GH_TOKEN`，用完即清，避免明文落盘。注意：PowerShell 5.1 管道直接喂多行输入（无论 `url=` 还是 `protocol=`/`host=` 形式）会报 `missing host/protocol field`——须将 `protocol=https\nhost=github.com\n\n` 写入临时文件后用 `cmd /c "git credential fill < 输入文件"` 供入（v0.18.0 实测）。
 4. **先打 tag 后发 release**：`gh release create` 必须引用已存在的 tag；tag 要在**发布内容定稿的提交**上打（tag 之后再提交的文档更新不会包含在 tag 快照里，属正常现象）。
 5. **打包前同步文档**：README/CHANGELOG 在打 tag 前若有更新，记得复制进 `_release` 目录再打包，否则包内文档滞后。
 6. **PowerShell 不支持 heredoc**：提交信息用 `git commit -F <文件>`，不要用 `<<'EOF'` 语法。
