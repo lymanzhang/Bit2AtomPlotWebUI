@@ -69,7 +69,18 @@ Remove-Item Env:\GH_TOKEN
 - 在 CHANGELOG.md 对应版本小节补充发布链接与本轮发布备注
 - `_release/` 已被 .gitignore 忽略，无需提交
 
-## 注意事项（v0.17.2 踩过的坑）
+## 发布记录
+
+### v0.18.0（2026-09-07）
+
+- **版本**：0.17.2 → 0.18.0（含新功能「运行日志落盘」，按 semver 升 minor），`npm version minor --no-git-tag-version` 同步 package.json + package-lock.json
+- **分叉调和**：发布前本地与远端 main 各有 1 个不同提交，`git pull --rebase` 无冲突解决后再提交/打 tag
+- **包结构演进**：`install.bat` / `install.sh` / `start.bat` / `start.sh` 已在 0.17.2 后从仓库移除，打包清单以 `git ls-tree HEAD --name-only` 为准（本次 85 条目、661.9 KB）
+- **fixture 收编**：复合路径回归测试原引用仓库外 SVG，已收进 `src/__tests__/fixtures/` 并用 `new URL("./fixtures/…", import.meta.url)` 引用，保证包内测试可独立运行
+- **credential 坑**：PowerShell 5.1 管道喂 `git credential fill` 报 `missing host/protocol field`（详见注意事项 3）
+- **产物**：tag `v0.18.0`、Release 附件 `bit2atombot-0.18.0-src.zip`，说明渲染与附件均验证通过
+
+## 注意事项（各版本踩过的坑）
 
 1. **`Compress-Archive` 的 zip 分隔符缺陷**：其生成的条目路径用反斜杠 `\`，违反 zip 规范——Windows 资源管理器和多数 Windows 工具能容错，但 Linux/macOS 解压会得到损坏的文件名/目录结构。**必须用 .NET ZipArchive 并显式 `Replace('\','/')`**。
 2. **PowerShell 不能直接调用 .NET 扩展方法**：`$arch.CreateEntryFromFile(...)` 会报 MethodNotFound，要用静态形式 `[System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($arch, ...)`。
