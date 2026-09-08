@@ -9,6 +9,8 @@
 
 ## [0.19.0] - 2026-09-08
 
+> 已发布至 [GitHub Releases](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.19.0)（tag `v0.19.0`，附件 `bit2atombot-0.19.0-src.zip`）。发布流程与注意事项见 [docs/RELEASE.md](docs/RELEASE.md)。
+
 ### Added
 
 - **绘制任务日志（按文件归档）**：每次 `/plot` / `/redraw` 自动在 `logs/` 下生成与源文件同名的任务日志（`logs/[源文件名]__<时间戳>.log`），任务头记录源文件、任务模式、图层过滤方式与绘制图层、硬件与端口、FIFO 深度、动作总数、预计时长、预计绘制距离、计划最大速度与开始时间，过程记录包含进度心跳、暂停/恢复/取消与错误诊断（含超时后 `QM` 状态探测），任务尾汇总实际时长、实际绘制距离与结束状态；绘制过程中的终端输出自动同步进日志。`BIT2ATOM_LOG_DIR` 与 `BIT2ATOM_NO_FILE_LOG=1` 对任务日志同样生效

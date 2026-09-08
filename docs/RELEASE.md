@@ -71,6 +71,18 @@ Remove-Item Env:\GH_TOKEN
 
 ## 发布记录
 
+### v0.19.0（2026-09-08）
+
+- **版本**：0.18.0 → 0.19.0（新增任务日志/排版设置 + 多项长时绘制可靠性修复，升 minor）
+- **release.mjs 的坑**：该工具会**自动** `inc` 版本 + commit + 打 tag——先手动 `npm version` 再跑它会导致版本连升两级（本次 0.19.0 → 0.20.0）。修正：版本文件手动改回目标值后，bump 提交变为空提交、`--amend` 会被 git 拒绝，需 `git reset HEAD^` 丢弃 bump 提交后重打 tag（注意先删掉误打的 tag）
+- **包结构**：git archive（tag 内容 61 个跟踪文件）+ `dist/` 预构建产物（36 个文件），共 97 条目、1.37 MB；`git archive` + `tar -xf` 解包到暂存目录，再用 .NET ZipArchive 打包
+- **credential 新坑**：本机安全策略禁止 `cmd /c`，`Start-Process -RedirectStandardInput` 喂 `git credential fill` 报 `missing protocol field`（PS 5.1 重定向编码问题）；**node `spawnSync` 的 `input` 选项是二进制安全的可靠替代**：
+  ```powershell
+  $r = node -e "const {spawnSync}=require('child_process'); const res=spawnSync('git',['credential','fill'],{input:'protocol=https\nhost=github.com\n\n',encoding:'utf8'}); process.stdout.write(res.stdout||'')" | Out-String
+  $env:GH_TOKEN = ($r | ConvertFrom-StringData).password
+  ```
+- **产物**：tag `v0.19.0`、Release 附件 `bit2atombot-0.19.0-src.zip`，说明渲染与附件验证通过
+
 ### v0.18.0（2026-09-07）
 
 - **版本**：0.17.2 → 0.18.0（含新功能「运行日志落盘」，按 semver 升 minor），`npm version minor --no-git-tag-version` 同步 package.json + package-lock.json
