@@ -789,6 +789,11 @@ export async function startServer(
               if (goal instanceof XYMotion) {
                 broadcast({ c: "pause", p: { paused: false } });
                 const travel = rewindTravelMotion(plan, curPos, goal.p1);
+                let travelMm = 0;
+                for (const b of travel.blocks) {
+                  travelMm += vlen(vsub(b.p2, b.p1));
+                }
+                plotLogger?.line("PLOT", `回溯：进度 ${idx} → ${target}（抬笔行程 ${(travelMm / plotStepsPerMm).toFixed(1)} mm）`);
                 await Promise.race([plotter.executeMotion(travel, [idx, endIdx]), abortPromise]);
                 curPos = goal.p1;
                 lastPenPos = curPos;
