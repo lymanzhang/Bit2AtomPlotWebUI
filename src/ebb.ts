@@ -61,6 +61,8 @@ type CommandGenerator<TReturn = unknown> = Iterator<unknown, TReturn, string> & 
 
 export class EBB {
   public port: SerialPort;
+  /** 当前配置的运动 FIFO 深度（未配置时 -1），供任务日志记录 */
+  public fifoDepth = -1;
   private commandQueue: CommandGenerator[];
   private writer: WritableStreamDefaultWriter<Uint8Array>;
   public hardware: Hardware;
@@ -82,6 +84,15 @@ export class EBB {
 
   /** Quiet period to wait after a queue flush before sending new commands. */
   private static readonly FLUSH_SETTLE_MS = 500;
+  // 速率超限警告只打一次（画一张图会有上万条 LM 命令）
+  private rateClampWarned = false;
+
+  /** EBB 步进速率上限：25kHz tick 的 32 位相位累加器，>25000 步/s 会溢出回绕（留 1 步余量） */
+  public static readonly MAX_STEPS_PER_SEC = 24999;
+
+  private clampRate(stepsPerSec: number): number {
+    return Math.min(stepsPerSec, EBB.MAX_STEPS_PER_SEC);
+  }
 
   public constructor(port: SerialPort, hardware: Hardware = "v3") {
     this.hardware = hardware;
@@ -246,10 +257,12 @@ export class EBB {
         if (requested > 1) {
           console.log("[bit2atombot] BIT2ATOM_FIFO_DEPTH ignored: firmware < 3.0.0 has a fixed 1-deep FIFO");
         }
+        this.fifoDepth = 1;
         return;
       }
       const depth = requested >= 1 ? requested : await this.maxFifoDepth();
       await this.command(`CU,4,${depth}`);
+      this.fifoDepth = depth;
       console.log(`[bit2atombot] EBB motion FIFO depth set to ${depth}`);
     } catch (err) {
       console.log(`[bit2atombot] failed to set FIFO depth: ${(err as Error).message}`);
@@ -487,6 +500,34 @@ export class EBB {
     throw new Error(`Unknown motion type: ${m.constructor.name}`);
   }
 
+  /**
+   * 估计一个动作在设备侧的实际执行时长（秒），供超时保护使用。
+   *
+   * 与 motion.duration()（计划时长）的区别：当块速率超过硬件上限被钳制后，
+   * 实际耗时长于计划时长（计划按未钳制速度计算）。超时保护必须按钳制后
+   * 的真实时长计算，否则单条长动作（如由上万短段组成的巨长路径，或被
+   * 钳制减速的高速行程）会被误判为设备停摆。
+   */
+  public estimateMotionDurationSec(m: Motion): number {
+    if (m instanceof PenMotion) return m.duration();
+    if (!(m instanceof XYMotion)) return 0;
+    // 电机使能前 microsteppingMode 为 DISABLED；prePlot 固定 16 细分
+    const mul = this.microsteppingMode === MicrostepMode.DISABLED ? 16 : this.stepMultiplier;
+    let totalSec = 0;
+    for (const b of m.blocks) {
+      // 与 axisRate 一致：按钳制后的步进速率计算块耗时（两轴并行，取较大者）
+      const axisSec = (steps: number): number => {
+        if (steps <= 0) return 0;
+        const avg = (this.clampRate(b.vInitial * mul) + this.clampRate(b.vFinal * mul)) / 2;
+        return avg > 0 ? (2 * steps) / avg : 0;
+      };
+      const stepsX = Math.abs(b.p2.x - b.p1.x) * mul;
+      const stepsY = Math.abs(b.p2.y - b.p1.y) * mul;
+      totalSec += Math.max(axisSec(stepsX), axisSec(stepsY));
+    }
+    return totalSec;
+  }
+
   public async executePlan(plan: Plan, microsteppingMode: RunningMicrostepMode = MicrostepMode.EIGHTH): Promise<void> {
     await this.configureFifoDepth();
     await this.enableMotors(microsteppingMode);
@@ -585,8 +626,26 @@ export class EBB {
    * @param finalStepsPerSec Final movement rate, in steps per second
    * @return A tuple of (initialAxisRate, deltaR) that can be passed to the LM command
    */
-  private axisRate(steps: number, initialStepsPerSec: number, finalStepsPerSec: number): [number, number] {
+  private axisRate(steps: number, requestedInitialStepsPerSec: number, requestedFinalStepsPerSec: number): [number, number] {
     if (steps === 0) return [0, 0];
+    // EBB 步进速率寄存器是 32 位相位累加器（25kHz tick），可表示上限为
+    // 25000 步/s；超出后 Math.round 会溢出为超过 2^31 的数值，设备按
+    // 32 位有符号数解析时回绕成负速率，可能导致运动引擎停摆。
+    const maxRate = EBB.MAX_STEPS_PER_SEC;
+    let initialStepsPerSec = requestedInitialStepsPerSec;
+    let finalStepsPerSec = requestedFinalStepsPerSec;
+    if (initialStepsPerSec > maxRate || finalStepsPerSec > maxRate) {
+      if (!this.rateClampWarned) {
+        this.rateClampWarned = true;
+        console.warn(
+          `[bit2atombot] Requested step rate exceeds EBB limit of 25000 steps/s ` +
+            `(${initialStepsPerSec.toFixed(0)}/${finalStepsPerSec.toFixed(0)}), clamping. ` +
+            `Reduce max velocities or microstepping.`,
+        );
+      }
+      initialStepsPerSec = this.clampRate(initialStepsPerSec);
+      finalStepsPerSec = this.clampRate(finalStepsPerSec);
+    }
     const initialRate = Math.round(initialStepsPerSec * (0x80000000 / 25000));
     const finalRate = Math.round(finalStepsPerSec * (0x80000000 / 25000));
     const moveTime = (2 * Math.abs(steps)) / (initialStepsPerSec + finalStepsPerSec);

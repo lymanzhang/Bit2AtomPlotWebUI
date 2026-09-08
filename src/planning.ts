@@ -1,15 +1,16 @@
 // Cribbed from https://github.com/fogleman/axi/blob/master/axi/planner.py
 import { PaperSize } from "./paper-size.js";
+import { defaultPlacement, type Placement } from "./util.js";
 import { type Vec2, vadd, vdot, vlen, vmul, vnorm, vsub } from "./vec.js";
 
 const epsilon = 1e-9;
 
 export interface DriveParams {
-  name: string;           // 自定义设备名称
-  stepAngle: number;      // 步距角 (度)，典型值 1.8
-  microstepping: number;  // 驱动细分，典型值 16
-  pulleyTeeth: number;    // 同步轮齿数，典型值 20
-  beltPitch: number;      // 同步带齿距 (mm)，典型值 2
+  name: string; // 自定义设备名称
+  stepAngle: number; // 步距角 (度)，典型值 1.8
+  microstepping: number; // 驱动细分，典型值 16
+  pulleyTeeth: number; // 同步轮齿数，典型值 20
+  beltPitch: number; // 同步带齿距 (mm)，典型值 2
 }
 
 export interface SavedProfile {
@@ -59,6 +60,7 @@ export interface PlanOptions {
   rotateDrawing: number;
   fitPage: boolean;
   cropToMargins: boolean;
+  placement: Placement;
 
   minimumPathLength: number;
   hardware: string;
@@ -92,6 +94,7 @@ export const defaultPlanOptions: PlanOptions = {
   rotateDrawing: 0,
   fitPage: true,
   cropToMargins: true,
+  placement: defaultPlacement,
 
   minimumPathLength: 0,
   hardware: "v3",
@@ -136,7 +139,7 @@ interface ToolingProfile {
 export const getDevice = (hardware = "v3"): Device => {
   if (hardware === "brushless") return AxidrawBrushless;
   if (hardware === "nextdraw-2234") return NextDraw2234;
-  if (hardware === "idraw-h-se") return Axidraw; 
+  if (hardware === "idraw-h-se") return Axidraw;
   if (hardware === "custom") return Axidraw;
   return Axidraw;
 };

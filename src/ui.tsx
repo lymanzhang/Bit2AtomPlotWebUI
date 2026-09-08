@@ -17,25 +17,39 @@ import React, {
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { PaperSize } from "./paper-size";
-import { getDevice, defaultPlanOptions, type MotionData, pathGroupStarts, Plan, type PlanOptions, XYMotion, computeStepsPerMm, computeMicrostepsPerMm, isBuiltinHardware, type SavedProfile } from "./planning.js";
-import useComponentSize from "./useComponentSize.js";
-import { formatDuration } from "./util.js";
 import { planToSvg } from "./export-svg.js";
+import { PaperSize } from "./paper-size";
+import {
+  computeMicrostepsPerMm,
+  computeStepsPerMm,
+  defaultPlanOptions,
+  getDevice,
+  isBuiltinHardware,
+  type MotionData,
+  Plan,
+  type PlanOptions,
+  pathGroupStarts,
+  type SavedProfile,
+  XYMotion,
+} from "./planning.js";
+import useComponentSize from "./useComponentSize.js";
+import { defaultPlacement, formatDuration, type Placement } from "./util.js";
 
 import "./style.css";
-import { type BaseDriver, type DeviceInfo, Bit2AtomDriver, WebSerialDriver } from "./drivers";
+import bit2atomLogo from "./bit2atomLogo.svg";
+import { type BaseDriver, Bit2AtomDriver, type DeviceInfo, WebSerialDriver } from "./drivers";
 import type { Hardware } from "./ebb";
 import pathJoinRadiusIcon from "./icons/path-joining radius.svg";
 import pointJoinRadiusIcon from "./icons/point-joining radius.svg";
 import rotateDrawingIcon from "./icons/rotate-drawing.svg";
-import bit2atomLogo from "./bit2atomLogo.svg";
 
 const defaultVisualizationOptions = {
-
   penStrokeWidth: 0.5,
   colorPathsByStrokeOrder: false,
 };
+
+// 预览最大放大倍数（最小为 1 = 充满绘制区域）
+const MAX_ZOOM = 40;
 
 const initialState = {
   connected: true,
@@ -264,11 +278,14 @@ const setPaths = (paths: Path[]): Action => {
   };
 };
 
-
 const CUSTOM_PROFILES_KEY = "bit2atombot.customProfiles";
 
 function loadSavedProfiles(): SavedProfile[] {
-  try { return JSON.parse(localStorage.getItem(CUSTOM_PROFILES_KEY) ?? "[]"); } catch { return []; }
+  try {
+    return JSON.parse(localStorage.getItem(CUSTOM_PROFILES_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
 }
 function saveSavedProfiles(profiles: SavedProfile[]): void {
   localStorage.setItem(CUSTOM_PROFILES_KEY, JSON.stringify(profiles));
@@ -285,41 +302,71 @@ function DriveParams({ state }: { state: State }) {
     <div>
       <label title="此配置的名称，方便后续识别">
         设备名称
-        <input type="text" value={dp.name}
-          onChange={(e) => { const v = e.target.value; set({ name: v }); }} />
+        <input
+          type="text"
+          value={dp.name}
+          onChange={(e) => {
+            const v = e.target.value;
+            set({ name: v });
+          }}
+        />
       </label>
       <div className="flex">
         <label title="步进电机每一步的转角">
           步距角 (&deg;)
-          <input type="number" value={dp.stepAngle} step="0.1" min="0.1"
-            onChange={e => set({ stepAngle: Number(e.target.value) })} />
+          <input
+            type="number"
+            value={dp.stepAngle}
+            step="0.1"
+            min="0.1"
+            onChange={(e) => set({ stepAngle: Number(e.target.value) })}
+          />
         </label>
         <label title="驱动器微步细分">
           细分
-          <input type="number" value={dp.microstepping} step="1" min="1"
-            onChange={e => set({ microstepping: Number(e.target.value) })} />
+          <input
+            type="number"
+            value={dp.microstepping}
+            step="1"
+            min="1"
+            onChange={(e) => set({ microstepping: Number(e.target.value) })}
+          />
         </label>
       </div>
       <div className="flex">
         <label title="同步轮齿数">
           同步轮齿数
-          <input type="number" value={dp.pulleyTeeth} step="1" min="1"
-            onChange={e => set({ pulleyTeeth: Number(e.target.value) })} />
+          <input
+            type="number"
+            value={dp.pulleyTeeth}
+            step="1"
+            min="1"
+            onChange={(e) => set({ pulleyTeeth: Number(e.target.value) })}
+          />
         </label>
         <label title="同步带齿距 (mm)">
           齿距 (mm)
-          <input type="number" value={dp.beltPitch} step="0.1" min="0.1"
-            onChange={e => set({ beltPitch: Number(e.target.value) })} />
+          <input
+            type="number"
+            value={dp.beltPitch}
+            step="0.1"
+            min="0.1"
+            onChange={(e) => set({ beltPitch: Number(e.target.value) })}
+          />
         </label>
       </div>
       <div className="drive-params-result">
         <div className="duration">
           <div>stepsPerMm</div>
-          <div><strong>{stepsPerMm.toFixed(4)}</strong></div>
+          <div>
+            <strong>{stepsPerMm.toFixed(4)}</strong>
+          </div>
         </div>
         <div className="duration">
           <div>微步值</div>
-          <div><strong>{microstepsPerMm.toFixed(4)}</strong></div>
+          <div>
+            <strong>{microstepsPerMm.toFixed(4)}</strong>
+          </div>
         </div>
       </div>
     </div>
@@ -393,7 +440,11 @@ function HardwareOptions({ state, driver }: { state: State; driver: BaseDriver |
       }
     } else {
       dispatch({ type: "SET_PLAN_OPTION", value: { hardware: value, driveParams: defaultPlanOptions.driveParams } });
-      try { driver?.changeHardware(value as Hardware); } catch (e) { console.warn('[Bit2AtomBot] HW change failed:', e); }
+      try {
+        driver?.changeHardware(value as Hardware);
+      } catch (e) {
+        console.warn("[Bit2AtomBot] HW change failed:", e);
+      }
     }
   };
   const currentHardware = state.planOptions.hardware;
@@ -401,10 +452,17 @@ function HardwareOptions({ state, driver }: { state: State; driver: BaseDriver |
   const handleSave = () => {
     const dp = state.planOptions.driveParams;
     const name = dp.name.trim();
-    if (!name) { alert("请输入设备名称"); return; }
+    if (!name) {
+      alert("请输入设备名称");
+      return;
+    }
     const profiles = loadSavedProfiles();
     const idx = profiles.findIndex((p) => p.name === name);
-    if (idx >= 0) { profiles[idx].driveParams = dp; } else { profiles.push({ name, driveParams: dp }); }
+    if (idx >= 0) {
+      profiles[idx].driveParams = dp;
+    } else {
+      profiles.push({ name, driveParams: dp });
+    }
     saveSavedProfiles(profiles);
     dispatch({ type: "SET_PLAN_OPTION", value: { hardware: name } });
     refreshProfiles();
@@ -421,16 +479,15 @@ function HardwareOptions({ state, driver }: { state: State; driver: BaseDriver |
     <div>
       <label title="硬件型号（影响舵机和电机设置）">
         硬件列表：
-        <select value={currentHardware}
-          onChange={(e) => handleHardwareChange(e.target.value)}
-          disabled={false}
-        >
+        <select value={currentHardware} onChange={(e) => handleHardwareChange(e.target.value)} disabled={false}>
           <option value="v3">AxiDraw V3</option>
           <option value="brushless">AxiDraw V3 Brushless</option>
           <option value="nextdraw-2234">NextDraw 2234</option>
           <option value="idraw-h-se">iDraw H SE</option>
           {savedProfiles.map((p) => (
-            <option key={p.name} value={p.name}>{p.name}</option>
+            <option key={p.name} value={p.name}>
+              {p.name}
+            </option>
           ))}
           <option value="custom">── 新建自定义 ──</option>
         </select>
@@ -439,8 +496,7 @@ function HardwareOptions({ state, driver }: { state: State; driver: BaseDriver |
         <div>
           <DriveParams state={state} />
           <div className="flex" style={{ marginTop: "4px" }}>
-            <button type="button" onClick={handleSave}
-              disabled={!state.planOptions.driveParams.name.trim()}>
+            <button type="button" onClick={handleSave} disabled={!state.planOptions.driveParams.name.trim()}>
               保存配置
             </button>
             {currentHardware !== "custom" && (
@@ -453,7 +509,8 @@ function HardwareOptions({ state, driver }: { state: State; driver: BaseDriver |
       )}
     </div>
   );
-}function VisualizationOptions({ state }: { state: State }) {
+}
+function VisualizationOptions({ state }: { state: State }) {
   const dispatch = useContext(DispatchContext);
 
   return (
@@ -471,10 +528,7 @@ function HardwareOptions({ state, driver }: { state: State; driver: BaseDriver |
           }
         />
       </label>
-      <label
-        className="flex-checkbox"
-        title="根据绘制顺序为路径着色。黄色最先，粉色最后。"
-      >
+      <label className="flex-checkbox" title="根据绘制顺序为路径着色。黄色最先，粉色最后。">
         <input
           type="checkbox"
           checked={state.visualizationOptions.colorPathsByStrokeOrder}
@@ -670,9 +724,7 @@ function PlanStatistics({ plan, planOptions: po }: { plan: Plan | null; planOpti
     ? computeStepsPerMm(po.driveParams)
     : getDevice(po.hardware).stepsPerMm;
   const totalDist = plan != null ? plan.totalDistance(stepsPerMm) : 0;
-  const distStr = totalDist >= 1000
-    ? `${(totalDist / 1000).toFixed(1)} m`
-    : `${Math.round(totalDist)} mm`;
+  const distStr = totalDist >= 1000 ? `${(totalDist / 1000).toFixed(1)} m` : `${Math.round(totalDist)} mm`;
   return (
     <div className="plan-stats">
       <div className="duration">
@@ -799,15 +851,13 @@ function PlanPreview({
           // During plotting, a motion is "completed" if its index < current progress.
           // After the plot (or redraw) finishes, progress is cleared but the drawn
           // watermark retains the completed coloring for everything already drawn.
-          const isCompleted =
-            (progress != null && motionIdx < progress) || motionIdx < (drawnWatermark ?? 0);
+          const isCompleted = (progress != null && motionIdx < progress) || motionIdx < (drawnWatermark ?? 0);
           const isCurrent = progress != null && motionIdx === progress;
           // 暂停回溯重绘着色：
           //   红色 — 已重绘完成的落笔线（任务结束后保留，便于检查重复绘制区域）
           //   橙色 — 位于重绘范围内、尚未重绘到的落笔线（暂停选择时为整个回溯区间）
           const inRedrawScope = redrawnRanges.length > 0 && inRanges(motionIdx, redrawnRanges);
-          const isRedrawn =
-            inRedrawScope && (!isPlotting || motionIdx < progress);
+          const isRedrawn = inRedrawScope && (!isPlotting || motionIdx < progress);
           const isRewindPending =
             !isRedrawn &&
             ((rewindRange != null &&
@@ -850,7 +900,17 @@ function PlanPreview({
         })}
       </g>
     );
-  }, [memoizedPlanPreview, progress, drawnWatermark, paused, redrawMode, rewindRange, redrawnRanges, strokeWidth, stepsPerMm]);
+  }, [
+    memoizedPlanPreview,
+    progress,
+    drawnWatermark,
+    paused,
+    redrawMode,
+    rewindRange,
+    redrawnRanges,
+    strokeWidth,
+    stepsPerMm,
+  ]);
 
   // w/h of svg.
   // first try scaling so that h = area.h. if w < area.w, then ok.
@@ -859,6 +919,50 @@ function PlanPreview({
     (ps.size.x / ps.size.y) * previewSize.height <= previewSize.width
       ? { width: (ps.size.x / ps.size.y) * previewSize.height, height: previewSize.height }
       : { height: (ps.size.y / ps.size.x) * previewSize.width, width: previewSize.width };
+
+  // —— 预览缩放/平移（纯显示层，不影响规划与绘制坐标） ——
+  // zoom=1 即"充满绘制区域"，是最小缩放；仅支持放大。平移钳制在纸面矩形内，
+  // zoom=1 时不可平移（锁定到图形/纸面边界）。
+  const [view, setView] = useState({ zoom: 1, panX: 0, panY: 0 });
+  const canvasRef = useRef<SVGSVGElement | null>(null);
+  const dragRef = useRef<{ clientX: number; clientY: number; panX: number; panY: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const viewW = ps.size.x / view.zoom;
+  const viewH = ps.size.y / view.zoom;
+  const clampPan = (pan: number, size: number, zoom: number): number => Math.min(Math.max(pan, 0), size - size / zoom);
+  // 以视口内比例坐标 (fracX, fracY) 为锚点缩放，保持锚点下的图形位置不动
+  const zoomAt = (factor: number, fracX: number, fracY: number): void => {
+    setView((v) => {
+      const zoom = Math.min(MAX_ZOOM, Math.max(1, v.zoom * factor));
+      if (zoom === v.zoom) return v;
+      const panX = clampPan(v.panX + fracX * ps.size.x * (1 / v.zoom - 1 / zoom), ps.size.x, zoom);
+      const panY = clampPan(v.panY + fracY * ps.size.y * (1 / v.zoom - 1 / zoom), ps.size.y, zoom);
+      return { zoom, panX, panY };
+    });
+  };
+  // 纸尺寸变化时复位视图：渲染期间检测到 paperSize 引用变化即重置（React 官方派生状态模式）
+  const [prevPaper, setPrevPaper] = useState(ps);
+  if (prevPaper !== ps) {
+    setPrevPaper(ps);
+    setView({ zoom: 1, panX: 0, panY: 0 });
+  }
+  // 滚轮缩放：仅作用于预览画布；需非被动监听以阻止页面滚动。
+  // 通过 ref 引用最新的 zoomAt，监听器只注册一次。
+  const zoomAtRef = useRef(zoomAt);
+  zoomAtRef.current = zoomAt;
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return undefined;
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const fracX = (e.clientX - rect.left) / rect.width;
+      const fracY = (e.clientY - rect.top) / rect.height;
+      zoomAtRef.current(Math.exp(-e.deltaY * 0.002), fracX, fracY);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   const [microprogress, setMicroprogress] = useState(0);
   useLayoutEffect(() => {
@@ -898,11 +1002,13 @@ function PlanPreview({
         width={width * 2}
         height={height * 2}
         viewBox={`${-width} ${-height} ${width * 2} ${height * 2}`}
+        // 放大/平移后，十字光标按当前视图把笔位置映射到屏幕
+        // （zoom=1 时等价于 (posXMm / ps.size.x) * 50%）
         style={{
           transform:
             "translateZ(0.001px) " +
             `translate(${-width}px, ${-height}px) ` +
-            `translate(${(posXMm / ps.size.x) * 50}%,${(posYMm / ps.size.y) * 50}%)`,
+            `translate(${((posXMm - view.panX) / viewW) * 50}%,${((posYMm - view.panY) / viewH) * 50}%)`,
         }}
       >
         <title>Progress percentage bar</title>
@@ -957,27 +1063,142 @@ function PlanPreview({
       const is50 = mm % 50 === 0;
       const tickLen = is50 ? 9 : is10 ? 6 : 3;
       if (mm <= drawW) {
-        ticks.push(<line key={`rt-${mm}`} x1={marginMm + mm} y1={marginMm} x2={marginMm + mm} y2={marginMm - tickLen} stroke="var(--canvas-ruler)" strokeWidth={is10 ? 0.15 : 0.08} />);
-        if (is10) ticks.push(<text key={`rtl-${mm}`} x={marginMm + mm} y={marginMm - tickLen - 0.8} fontSize="2.2" textAnchor="middle" fill="var(--canvas-ruler-text)">{`${mm}`}</text>);
+        ticks.push(
+          <line
+            key={`rt-${mm}`}
+            x1={marginMm + mm}
+            y1={marginMm}
+            x2={marginMm + mm}
+            y2={marginMm - tickLen}
+            stroke="var(--canvas-ruler)"
+            strokeWidth={is10 ? 0.15 : 0.08}
+          />,
+        );
+        if (is10)
+          ticks.push(
+            <text
+              key={`rtl-${mm}`}
+              x={marginMm + mm}
+              y={marginMm - tickLen - 0.8}
+              fontSize="2.2"
+              textAnchor="middle"
+              fill="var(--canvas-ruler-text)"
+            >{`${mm}`}</text>,
+          );
       }
       if (mm <= drawW) {
-        ticks.push(<line key={`rb-${mm}`} x1={marginMm + mm} y1={marginMm + drawH} x2={marginMm + mm} y2={marginMm + drawH + tickLen} stroke="var(--canvas-ruler)" strokeWidth={is10 ? 0.15 : 0.08} />);
-        if (is10) ticks.push(<text key={`rbl-${mm}`} x={marginMm + mm} y={marginMm + drawH + tickLen + 1.8} fontSize="2.2" textAnchor="middle" fill="var(--canvas-ruler-text)">{`${mm}`}</text>);
+        ticks.push(
+          <line
+            key={`rb-${mm}`}
+            x1={marginMm + mm}
+            y1={marginMm + drawH}
+            x2={marginMm + mm}
+            y2={marginMm + drawH + tickLen}
+            stroke="var(--canvas-ruler)"
+            strokeWidth={is10 ? 0.15 : 0.08}
+          />,
+        );
+        if (is10)
+          ticks.push(
+            <text
+              key={`rbl-${mm}`}
+              x={marginMm + mm}
+              y={marginMm + drawH + tickLen + 1.8}
+              fontSize="2.2"
+              textAnchor="middle"
+              fill="var(--canvas-ruler-text)"
+            >{`${mm}`}</text>,
+          );
       }
       if (mm <= drawH) {
-        ticks.push(<line key={`rl-${mm}`} x1={marginMm} y1={marginMm + mm} x2={marginMm - tickLen} y2={marginMm + mm} stroke="var(--canvas-ruler)" strokeWidth={is10 ? 0.15 : 0.08} />);
-        if (is10) ticks.push(<text key={`rll-${mm}`} x={marginMm - tickLen - 0.8} y={marginMm + mm + 0.7} fontSize="2.2" textAnchor="end" fill="var(--canvas-ruler-text)">{`${mm}`}</text>);
+        ticks.push(
+          <line
+            key={`rl-${mm}`}
+            x1={marginMm}
+            y1={marginMm + mm}
+            x2={marginMm - tickLen}
+            y2={marginMm + mm}
+            stroke="var(--canvas-ruler)"
+            strokeWidth={is10 ? 0.15 : 0.08}
+          />,
+        );
+        if (is10)
+          ticks.push(
+            <text
+              key={`rll-${mm}`}
+              x={marginMm - tickLen - 0.8}
+              y={marginMm + mm + 0.7}
+              fontSize="2.2"
+              textAnchor="end"
+              fill="var(--canvas-ruler-text)"
+            >{`${mm}`}</text>,
+          );
       }
       if (mm <= drawH) {
-        ticks.push(<line key={`rr-${mm}`} x1={marginMm + drawW} y1={marginMm + mm} x2={marginMm + drawW + tickLen} y2={marginMm + mm} stroke="var(--canvas-ruler)" strokeWidth={is10 ? 0.15 : 0.08} />);
-        if (is10) ticks.push(<text key={`rrl-${mm}`} x={marginMm + drawW + tickLen + 0.8} y={marginMm + mm + 0.7} fontSize="2.2" textAnchor="start" fill="var(--canvas-ruler-text)">{`${mm}`}</text>);
+        ticks.push(
+          <line
+            key={`rr-${mm}`}
+            x1={marginMm + drawW}
+            y1={marginMm + mm}
+            x2={marginMm + drawW + tickLen}
+            y2={marginMm + mm}
+            stroke="var(--canvas-ruler)"
+            strokeWidth={is10 ? 0.15 : 0.08}
+          />,
+        );
+        if (is10)
+          ticks.push(
+            <text
+              key={`rrl-${mm}`}
+              x={marginMm + drawW + tickLen + 0.8}
+              y={marginMm + mm + 0.7}
+              fontSize="2.2"
+              textAnchor="start"
+              fill="var(--canvas-ruler-text)"
+            >{`${mm}`}</text>,
+          );
       }
     }
     return ticks;
   }, [marginMm, drawW, drawH]);
   return (
     <div className="preview">
-      <svg width={width} height={height} viewBox={`0 0 ${ps.size.x} ${ps.size.y}`}>
+      <svg
+        ref={canvasRef}
+        className={`preview-canvas${view.zoom > 1 ? " zoomed" : ""}${dragging ? " dragging" : ""}`}
+        width={width}
+        height={height}
+        viewBox={`${view.panX} ${view.panY} ${viewW} ${viewH}`}
+        onPointerDown={(e) => {
+          if (e.button !== 0 || view.zoom <= 1) return;
+          // 阻止浏览器在拖拽平移时对标尺文字/图形启动文本选择
+          e.preventDefault();
+          e.currentTarget.setPointerCapture(e.pointerId);
+          dragRef.current = { clientX: e.clientX, clientY: e.clientY, panX: view.panX, panY: view.panY };
+          setDragging(true);
+        }}
+        onPointerMove={(e) => {
+          const d = dragRef.current;
+          if (!d) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          setView((v) => ({
+            ...v,
+            panX: clampPan(d.panX - ((e.clientX - d.clientX) / rect.width) * (ps.size.x / v.zoom), ps.size.x, v.zoom),
+            panY: clampPan(d.panY - ((e.clientY - d.clientY) / rect.height) * (ps.size.y / v.zoom), ps.size.y, v.zoom),
+          }));
+        }}
+        onPointerUp={() => {
+          dragRef.current = null;
+          setDragging(false);
+        }}
+        onPointerLeave={() => {
+          // 指针离开时兜底结束拖拽（正常路径经 setPointerCapture 不会触发）
+          if (dragRef.current) {
+            dragRef.current = null;
+            setDragging(false);
+          }
+        }}
+      >
         <title>Plot preview</title>
         {gridDefs}
         {gridRects}
@@ -985,6 +1206,18 @@ function PlanPreview({
         {renderedPlanPreview}
         {margins}
       </svg>
+      <div className="preview-toolbar">
+        <button type="button" title="放大" onClick={() => zoomAt(1.5, 0.5, 0.5)}>
+          ＋
+        </button>
+        <button type="button" title="缩小（最小为充满绘制区域）" onClick={() => zoomAt(1 / 1.5, 0.5, 0.5)}>
+          －
+        </button>
+        <button type="button" title="复位视图（充满绘制区域）" onClick={() => setView({ zoom: 1, panX: 0, panY: 0 })}>
+          1:1
+        </button>
+        <span title="当前缩放比例，滚轮或拖拽可检查图形细节">{Math.round(view.zoom * 100)}%</span>
+      </div>
       {progressIndicator}
     </div>
   );
@@ -1069,6 +1302,19 @@ function PlotButtons({
   const planSignature = (p: Plan) => (p ? `${serialize(state.planOptions)}#${p.motions.length}` : null);
   function plot(plan: Plan) {
     lastPlotSig.current = planSignature(plan);
+    // 捕获本次绘制的图层信息（模式 + 选中图层），随请求头传给服务端任务
+    // 日志。补画沿用上次绘制时捕获的信息，与 lastPlan 的实际内容对应。
+    driver.plotLayerInfo = {
+      mode: state.planOptions.layerMode,
+      layers:
+        state.planOptions.layerMode === "group"
+          ? [...state.planOptions.selectedGroupLayers].sort()
+          : [...state.planOptions.selectedStrokeLayers].sort(),
+    };
+    // 计划坐标处于全步进空间（mm×stepsPerMm），服务端换算真实距离需要该密度
+    driver.plotStepsPerMm = isBuiltinHardware(state.planOptions.hardware)
+      ? getDevice(state.planOptions.hardware).stepsPerMm
+      : computeStepsPerMm(state.planOptions.driveParams);
     dispatch({ type: "SET_REWIND_RANGE", value: null });
     dispatch({ type: "SET_REDRAWN_RANGES", value: [] });
     dispatch({ type: "SET_REDRAW_MODE", value: false });
@@ -1210,48 +1456,59 @@ function PlotButtons({
   };
 
   const simRef = React.useRef<{ timer: number | null; cancelled: boolean }>({ timer: null, cancelled: false });
-  const simulate = React.useCallback((simPlan: Plan) => {
-    const motions = simPlan.motions;
-    let idx = 0;
-    simRef.current.cancelled = false;
-    dispatch({ type: "SET_SIMULATING", value: true });
-    dispatch({ type: "SET_DRAWN_WATERMARK", value: null });
-    const advance = () => {
-      if (simRef.current.cancelled || idx >= motions.length) {
-        dispatch({ type: "SET_PROGRESS", motionIdx: null });
-        dispatch({ type: "SET_SIMULATING", value: false });
-        return;
-      }
-    const curMotion = motions[idx];
-      dispatch({ type: "SET_PROGRESS", motionIdx: idx });
-      idx++;
-      simRef.current.timer = window.setTimeout(advance, Math.max(16, (curMotion instanceof XYMotion ? curMotion.duration() : 0.05) * 1000));
-    };
-    advance();
-  }, [dispatch]);
+  const simulate = React.useCallback(
+    (simPlan: Plan) => {
+      const motions = simPlan.motions;
+      let idx = 0;
+      simRef.current.cancelled = false;
+      dispatch({ type: "SET_SIMULATING", value: true });
+      dispatch({ type: "SET_DRAWN_WATERMARK", value: null });
+      const advance = () => {
+        if (simRef.current.cancelled || idx >= motions.length) {
+          dispatch({ type: "SET_PROGRESS", motionIdx: null });
+          dispatch({ type: "SET_SIMULATING", value: false });
+          return;
+        }
+        const curMotion = motions[idx];
+        dispatch({ type: "SET_PROGRESS", motionIdx: idx });
+        idx++;
+        simRef.current.timer = window.setTimeout(
+          advance,
+          Math.max(16, (curMotion instanceof XYMotion ? curMotion.duration() : 0.05) * 1000),
+        );
+      };
+      advance();
+    },
+    [dispatch],
+  );
   const stopSimulate = React.useCallback(() => {
     simRef.current.cancelled = true;
-    if (simRef.current.timer != null) { clearTimeout(simRef.current.timer); simRef.current.timer = null; }
+    if (simRef.current.timer != null) {
+      clearTimeout(simRef.current.timer);
+      simRef.current.timer = null;
+    }
     dispatch({ type: "SET_PROGRESS", motionIdx: null });
     dispatch({ type: "SET_SIMULATING", value: false });
   }, [dispatch]);
   React.useEffect(() => {
     return () => {
       simRef.current.cancelled = true;
-      if (simRef.current.timer != null) { clearTimeout(simRef.current.timer); }
+      if (simRef.current.timer != null) {
+        clearTimeout(simRef.current.timer);
+      }
     };
   }, []);
 
   React.useEffect(() => {
     return () => {
       simRef.current.cancelled = true;
-      if (simRef.current.timer != null) { clearTimeout(simRef.current.timer); }
+      if (simRef.current.timer != null) {
+        clearTimeout(simRef.current.timer);
+      }
     };
   }, []);
   const totalSteps = plan?.motions?.length ?? 1;
-  const pct = state.progress != null
-    ? Math.min(Math.round((state.progress + 1) / totalSteps * 100), 100)
-    : 0;
+  const pct = state.progress != null ? Math.min(Math.round(((state.progress + 1) / totalSteps) * 100), 100) : 0;
 
   return (
     <div>
@@ -1315,7 +1572,8 @@ function PlotButtons({
       {state.paused && !state.isSimulating && state.progress != null && plan && pauseGroupIdx >= 0 && (
         <div className="rewind-controls">
           <div className="rewind-info">
-            暂停中 — 已绘制第 {pauseGroupIdx + 1} / {groupStarts.length} 条路径。拖动滑块选择回溯位置，重绘的线条将在预览中标红。
+            暂停中 — 已绘制第 {pauseGroupIdx + 1} / {groupStarts.length}{" "}
+            条路径。拖动滑块选择回溯位置，重绘的线条将在预览中标红。
           </div>
           <div className="rewind-slider-row">
             <input
@@ -1341,7 +1599,11 @@ function PlotButtons({
           <button type="button" onClick={enterRedrawMode}>
             补画模式…
           </button>
-          <button type="button" onClick={homePen} title="抬笔回到起始点。补画前若笔位置未知（如服务重启过），请先执行此项">
+          <button
+            type="button"
+            onClick={homePen}
+            title="抬笔回到起始点。补画前若笔位置未知（如服务重启过），请先执行此项"
+          >
             笔回原点
           </button>
         </div>
@@ -1349,7 +1611,8 @@ function PlotButtons({
       {state.redrawMode && state.progress == null && !state.isSimulating && groupCount > 0 && (
         <div className="rewind-controls redraw-mode-controls">
           <div className="rewind-info">
-            补画模式 — 拖动两个滑块选择要补画的路径区间（第 {redrawG0 + 1} 至 {redrawG1 + 1} 条），预览中以橙色高亮。确认后点击「补画选中区间」。
+            补画模式 — 拖动两个滑块选择要补画的路径区间（第 {redrawG0 + 1} 至 {redrawG1 + 1}{" "}
+            条），预览中以橙色高亮。确认后点击「补画选中区间」。
           </div>
           <div className="rewind-slider-row">
             <span className="rewind-slider-label">起点</span>
@@ -1381,7 +1644,11 @@ function PlotButtons({
             <button type="button" className="cancel-button cancel-button--active" onClick={startRedraw}>
               补画选中区间
             </button>
-            <button type="button" onClick={homePen} title="抬笔回到起始点。补画前若笔位置未知（如服务重启过），请先执行此项">
+            <button
+              type="button"
+              onClick={homePen}
+              title="抬笔回到起始点。补画前若笔位置未知（如服务重启过），请先执行此项"
+            >
               笔回原点
             </button>
             <button type="button" onClick={exitRedrawMode}>
@@ -1406,6 +1673,64 @@ function ResetToDefaultsButton() {
     <button type="reset" className="button-link" onClick={onClick}>
       重置所有选项
     </button>
+  );
+}
+
+/** 排版：图形在边距框内的对齐方式；自定义偏移相对边距框左上角（mm） */
+function PlacementConfig({ state }: { state: State }) {
+  const dispatch = useContext(DispatchContext);
+  const placement = state.planOptions.placement ?? defaultPlacement;
+  const set = (p: Partial<Placement>) =>
+    dispatch({ type: "SET_PLAN_OPTION", value: { placement: { ...placement, ...p } } });
+  return (
+    <div title="图形在边距框内的排版位置；自定义偏移相对边距框左上角">
+      <div className="flex">
+        <label title="水平方向：居左 / 居中 / 居右 / 自定义">
+          水平排版
+          <select value={placement.alignH} onChange={(e) => set({ alignH: e.target.value as Placement["alignH"] })}>
+            <option value="left">居左</option>
+            <option value="center">居中</option>
+            <option value="right">居右</option>
+            <option value="custom">自定义</option>
+          </select>
+        </label>
+        <label title="垂直方向：居上 / 居中 / 居下 / 自定义">
+          垂直排版
+          <select value={placement.alignV} onChange={(e) => set({ alignV: e.target.value as Placement["alignV"] })}>
+            <option value="top">居上</option>
+            <option value="middle">居中</option>
+            <option value="bottom">居下</option>
+            <option value="custom">自定义</option>
+          </select>
+        </label>
+      </div>
+      {(placement.alignH === "custom" || placement.alignV === "custom") && (
+        <div className="flex">
+          {placement.alignH === "custom" ? (
+            <label title="图形包围盒左上角相对边距框左上角的 X 偏移 (mm)">
+              X 偏移 (mm)
+              <input
+                type="number"
+                value={placement.customXMm}
+                step="1"
+                onChange={(e) => set({ customXMm: Number(e.target.value) })}
+              />
+            </label>
+          ) : null}
+          {placement.alignV === "custom" ? (
+            <label title="图形包围盒左上角相对边距框左上角的 Y 偏移 (mm)">
+              Y 偏移 (mm)
+              <input
+                type="number"
+                value={placement.customYMm}
+                step="1"
+                onChange={(e) => set({ customYMm: Number(e.target.value) })}
+              />
+            </label>
+          ) : null}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1450,10 +1775,14 @@ function PlanConfig({ state }: { state: State }) {
             裁剪至边距
           </label>
         ) : null}
-          <label className="flex-checkbox">
-            <input type="checkbox" checked={state.planOptions.hiding} onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { hiding: !!e.target.checked } })} />
-            隐藏线去除
-          </label>
+        <label className="flex-checkbox">
+          <input
+            type="checkbox"
+            checked={state.planOptions.hiding}
+            onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { hiding: !!e.target.checked } })}
+          />
+          隐藏线去除
+        </label>
       </form>
       <div className="horizontal-labels">
         <label title="合并同一路径中相近的点（去重），单位 mm">
@@ -1682,6 +2011,8 @@ function Root() {
   // biome-ignore lint/correctness/useExhaustiveDependencies(setPlan): React setters are stable
   useEffect(() => {
     if (driver == null) return;
+    // 文件可能先于设备连接加载，连接/重连后补同步源文件名供任务日志使用
+    driver.plotFileName = svgFileNameRef.current;
     driver.onprogress = (motionIdx: number) => {
       dispatch({ type: "SET_PROGRESS", motionIdx });
     };
@@ -1711,10 +2042,18 @@ function Root() {
     return () => clearInterval(interval);
   }, [driver, state.connected]);
 
+  // 当前加载的源 SVG 文件名（ref 保证跨 driver 重连可用），随绘制/补画请求
+  // 通过 X-Plot-Filename 头传给服务端，用于生成与源文件同名的任务日志。
+  const svgFileNameRef = React.useRef<string | null>(null);
+
   const handleFile = React.useCallback(
     (file: File) => {
       setIsLoadingFile(true);
       setPlan(null);
+      svgFileNameRef.current = file.name;
+      if (driver != null) {
+        driver.plotFileName = file.name;
+      }
 
       const reader = new FileReader();
       reader.onload = () => {
@@ -1726,12 +2065,16 @@ function Root() {
       };
       reader.readAsText(file);
     },
-    [setPlan],
+    [setPlan, driver],
   );
   const handleClear = React.useCallback(() => {
     setPlan(null);
+    svgFileNameRef.current = null;
+    if (driver != null) {
+      driver.plotFileName = null;
+    }
     dispatch({ type: "CLEAR_PATHS" });
-  }, [setPlan]);
+  }, [setPlan, driver]);
   const handleExportSvg = React.useCallback(() => {
     if (!plan) return;
     const stepsPerMm = !isBuiltinHardware(state.planOptions.hardware)
@@ -1746,15 +2089,13 @@ function Root() {
     a.click();
     URL.revokeObjectURL(url);
   }, [plan, state.planOptions]);
-  const [theme, setTheme] = React.useState<'light' | 'dark'>(
-    () => (window.localStorage.getItem("bit2atom-theme") as 'light' | 'dark') || "light"
+  const [theme, setTheme] = React.useState<"light" | "dark">(
+    () => (window.localStorage.getItem("bit2atom-theme") as "light" | "dark") || "light",
   );
   React.useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     window.localStorage.setItem("bit2atom-theme", theme);
   }, [theme]);
-
-
 
   useEffect(() => {
     // Called when the user drags and drops the image
@@ -1817,11 +2158,11 @@ function Root() {
           )}
           {IS_WEB && (
             <div className="section-body">
-            <PortSelector
-              driver={driver}
-              setDriver={setDriver}
-              hardware={(driver as WebSerialDriver)?.ebb?.hardware ?? (state.planOptions.hardware as Hardware)}
-            />
+              <PortSelector
+                driver={driver}
+                setDriver={setDriver}
+                hardware={(driver as WebSerialDriver)?.ebb?.hardware ?? (state.planOptions.hardware as Hardware)}
+              />
             </div>
           )}
           <div className="section-header">画笔设置</div>
@@ -1836,27 +2177,25 @@ function Root() {
             <PaperConfig state={state} />
             <LayerSelector state={state} />
           </div>
+          <div className="section-header">排版设置</div>
+          <div className="section-body">
+            <PlacementConfig state={state} />
+          </div>
           <details>
             <summary className="section-header">更多设置</summary>
             <div className="section-body">
               <PlanConfig state={state} />
               <OriginOptions state={state} />
               <VisualizationOptions state={state} />
-              <div className="section-header" style={{marginTop:"8px"}}>主题设置</div>
+              <div className="section-header" style={{ marginTop: "8px" }}>
+                主题设置
+              </div>
               <label className="flex-checkbox">
-                <input
-                  type="checkbox"
-                  checked={theme === "light"}
-                  onChange={() => setTheme("light")}
-                />
+                <input type="checkbox" checked={theme === "light"} onChange={() => setTheme("light")} />
                 浅色模式
               </label>
               <label className="flex-checkbox">
-                <input
-                  type="checkbox"
-                  checked={theme === "dark"}
-                  onChange={() => setTheme("dark")}
-                />
+                <input type="checkbox" checked={theme === "dark"} onChange={() => setTheme("dark")} />
                 暗色模式
               </label>
             </div>
@@ -1872,15 +2211,11 @@ function Root() {
                 currentMotionStartedTime={currentMotionStartedTime}
                 paused={state.paused}
               />
-          {plan && !state.isSimulating && (
-            <button
-              type="button"
-              className="export-svg-btn"
-              onClick={handleExportSvg}
-            >
-              导出 SVG
-            </button>
-          )}
+              {plan && !state.isSimulating && (
+                <button type="button" className="export-svg-btn" onClick={handleExportSvg}>
+                  导出 SVG
+                </button>
+              )}
               <PlotButtons plan={plan} isPlanning={isPlanning} state={state} driver={driver} />
             </div>
           </div>
@@ -1894,11 +2229,7 @@ function Root() {
           <PlanLoader isPlanning={isPlanning} isLoadingFile={isLoadingFile} />
           {showDragTarget && <DragTarget handleFile={handleFile} />}
           {state.paths && state.paths.length > 0 && (
-            <button
-              type="button"
-              className="clear-svg-btn"
-              onClick={handleClear}
-            >
+            <button type="button" className="clear-svg-btn" onClick={handleClear}>
               清除 SVG
             </button>
           )}
@@ -1974,11 +2305,12 @@ function readSvg(svgString: string): Path[] {
   for (const shape of shapes) {
     if (pathIdx >= paths.length) break;
     const fill = shape.getAttribute("fill") || (shape as SVGElement).style?.fill || null;
-    const fillRule = shape.getAttribute("fill-rule")
-      || (shape as SVGElement).style?.fillRule
-      || svg.getAttribute("fill-rule")
-      || (svg as SVGElement).style?.fillRule
-      || null;
+    const fillRule =
+      shape.getAttribute("fill-rule") ||
+      (shape as SVGElement).style?.fillRule ||
+      svg.getAttribute("fill-rule") ||
+      (svg as SVGElement).style?.fillRule ||
+      null;
     // Handle compound paths: a single <path> can produce multiple flattened paths
     // (one per M command — flatten-svg pushes a new Path at every M). Apply the
     // same fill/fillRule/transform to all of them.
@@ -2092,10 +2424,22 @@ function parseSvgTransform(transform: string): SvgMatrix {
 // Per SVG spec, `transform` only takes effect on these element types.
 function hasSvgTransform(el: Element): boolean {
   const tag = el.nodeName.toLowerCase();
-  return tag === "svg" || tag === "g" || tag === "a"
-    || tag === "path" || tag === "rect" || tag === "circle" || tag === "ellipse"
-    || tag === "line" || tag === "polyline" || tag === "polygon"
-    || tag === "text" || tag === "use" || tag === "image" || tag === "switch";
+  return (
+    tag === "svg" ||
+    tag === "g" ||
+    tag === "a" ||
+    tag === "path" ||
+    tag === "rect" ||
+    tag === "circle" ||
+    tag === "ellipse" ||
+    tag === "line" ||
+    tag === "polyline" ||
+    tag === "polygon" ||
+    tag === "text" ||
+    tag === "use" ||
+    tag === "image" ||
+    tag === "switch"
+  );
 }
 
 function collectSvgMatrices(svg: Element): Map<Element, SvgMatrix> {

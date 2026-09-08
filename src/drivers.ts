@@ -41,6 +41,22 @@ export abstract class BaseDriver {
    * Called when plan loaded
    */
   public onplan: (plan: Plan) => void = () => {};
+  /**
+   * 当前加载的源 SVG 文件名。发起绘制/补画请求时通过 X-Plot-Filename
+   * 头传给服务端，用于生成与源文件同名的任务日志。
+   */
+  public plotFileName: string | null = null;
+  /**
+   * 本次绘制任务的图层信息（图层过滤模式 + 选中的图层名）。发起绘制/
+   * 补画请求时通过 X-Plot-Layers 头传给服务端，写入任务日志。
+   */
+  public plotLayerInfo: { mode: string; layers: string[] } | null = null;
+  /**
+   * 计划坐标所用的步进密度（步/mm）。Plan 的全部坐标都在全步进空间
+   * （mm×stepsPerMm），服务端换算真实毫米距离时必需；custom 硬件的
+   * driveParams 只有前端知道，故随请求头传给服务端。
+   */
+  public plotStepsPerMm: number | null = null;
 
   abstract plot(plan: Plan): void;
   abstract cancel(): void;
@@ -186,7 +202,7 @@ export class WebSerialDriver extends BaseDriver {
         const motion = plan.motions[idx];
         this.onprogress(idx);
         // LM/XM 指令在 EBB FIFO 接受后即返回（毫秒级），150s 只在队列卡死时触发。
-        await withTimeout(this.ebb.executeMotion(motion), 150000, "executeMotion");
+        await this.guardedMotion(() => this.ebb.executeMotion(motion), "executeMotion");
         if (motion instanceof XYMotion) {
           curPos = motion.p2;
           this._lastPenPos = curPos;
@@ -209,7 +225,7 @@ export class WebSerialDriver extends BaseDriver {
               if (goal instanceof XYMotion) {
                 this.onpause(false);
                 const travel = rewindTravelMotion(plan, curPos, goal.p1);
-                await withTimeout(this.ebb.executeMotion(travel), 150000, "rewindTravel");
+                await this.guardedMotion(() => this.ebb.executeMotion(travel), "rewindTravel");
                 curPos = goal.p1;
                 this._lastPenPos = curPos;
                 idx = target;
@@ -252,11 +268,47 @@ export class WebSerialDriver extends BaseDriver {
       this.oncancelled();
     } finally {
       try {
-        await withTimeout(this.ebb.waitUntilMotorsIdle(60000), 65000, "waitUntilMotorsIdle");
+        // 深FIFO（fw≥3.0）下 motion 循环发完后设备侧可能仍有积压（见
+        // server.ts doPlot 注释），排空上限按计划总时长 + 60s 裕量。
+        const drainTimeoutMs = Math.ceil(plan.duration() * 1000) + 60000;
+        await withTimeout(this.ebb.waitUntilMotorsIdle(drainTimeoutMs), drainTimeoutMs + 5000, "waitUntilMotorsIdle");
         await withTimeout(this.ebb.disableMotors(), 15000, "disableMotors");
       } catch (e) {
         console.error("Plot cleanup failed:", e);
+        // 队列可能因应答丢失而错位：先清空并等过沉降期再发兜底命令。
+        this.ebb.cancel();
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        // 排空超时后设备可能停在动作中途：尽力抬笔（避免笔压纸）再断使能。
+        const penMotion = plan.motions.find((motion): motion is PenMotion => motion instanceof PenMotion);
+        const penUpPosition = penMotion
+          ? Math.max(penMotion.initialPos, penMotion.finalPos)
+          : getDevice(this.ebb.hardware).penPctToPos(50);
+        try {
+          await withTimeout(this.ebb.setPenHeight(penUpPosition, 1000), 15000, "setPenHeight(fallback)");
+        } catch {
+          /* ignore */
+        }
+        try {
+          await withTimeout(this.ebb.disableMotors(), 15000, "disableMotors(fallback)");
+        } catch {
+          /* ignore */
+        }
       }
+    }
+  }
+
+  /**
+   * 执行运动命令并在超时后自恢复：命令应答丢失/设备引擎停摆会让队列头
+   * 永久挂起，且响应按入队顺序匹配、之后所有命令的响应都会错位。清空
+   * 队列并等过沉降期（孤儿应答被丢弃），后续抬笔/断使能兜底才能送达设备。
+   */
+  private async guardedMotion(run: () => Promise<void>, label: string): Promise<void> {
+    try {
+      await withTimeout(run(), 150000, label);
+    } catch (e) {
+      this.ebb.cancel();
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      throw e;
     }
   }
 
@@ -312,7 +364,7 @@ export class WebSerialDriver extends BaseDriver {
       const goal = plan.motions[start];
       if (goal instanceof XYMotion && (goal.p1.x !== curPos.x || goal.p1.y !== curPos.y)) {
         const travel = rewindTravelMotion(plan, curPos, goal.p1);
-        await withTimeout(this.ebb.executeMotion(travel), 150000, "redrawTravel");
+        await this.guardedMotion(() => this.ebb.executeMotion(travel), "redrawTravel");
         curPos = goal.p1;
         this._lastPenPos = curPos;
       }
@@ -321,7 +373,7 @@ export class WebSerialDriver extends BaseDriver {
       while (idx < end && !this._cancelRequested) {
         const motion = plan.motions[idx];
         this.onprogress(idx);
-        await withTimeout(this.ebb.executeMotion(motion), 150000, "executeMotion");
+        await this.guardedMotion(() => this.ebb.executeMotion(motion), "executeMotion");
         if (motion instanceof XYMotion) {
           curPos = motion.p2;
           this._lastPenPos = curPos;
@@ -377,10 +429,29 @@ export class WebSerialDriver extends BaseDriver {
       this.oncancelled();
     } finally {
       try {
-        await withTimeout(this.ebb.waitUntilMotorsIdle(60000), 65000, "waitUntilMotorsIdle");
+        const drainTimeoutMs = Math.ceil(plan.duration() * 1000) + 60000;
+        await withTimeout(this.ebb.waitUntilMotorsIdle(drainTimeoutMs), drainTimeoutMs + 5000, "waitUntilMotorsIdle");
         await withTimeout(this.ebb.disableMotors(), 15000, "disableMotors");
       } catch (e) {
         console.error("Redraw cleanup failed:", e);
+        // 队列可能因应答丢失而错位：先清空并等过沉降期再发兜底命令。
+        this.ebb.cancel();
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        // 排空超时后设备可能停在动作中途：尽力抬笔（避免笔压纸）再断使能。
+        const penMotion = plan.motions.find((motion): motion is PenMotion => motion instanceof PenMotion);
+        const penUpPosition = penMotion
+          ? Math.max(penMotion.initialPos, penMotion.finalPos)
+          : getDevice(this.ebb.hardware).penPctToPos(50);
+        try {
+          await withTimeout(this.ebb.setPenHeight(penUpPosition, 1000), 15000, "setPenHeight(fallback)");
+        } catch {
+          /* ignore */
+        }
+        try {
+          await withTimeout(this.ebb.disableMotors(), 15000, "disableMotors(fallback)");
+        } catch {
+          /* ignore */
+        }
       }
     }
   }
@@ -398,7 +469,11 @@ export class WebSerialDriver extends BaseDriver {
     // enableMotors + HM，必须用基于已知位置的抬笔行程移动。
     await withTimeout(this.ebb.enableMotors(this.ebb.hardware === "v3" ? 2 : 3), 15000, "enableMotors");
     try {
-      if (plan != null && this._lastPenPos != null && (this._lastPenPos.x !== home.x || this._lastPenPos.y !== home.y)) {
+      if (
+        plan != null &&
+        this._lastPenPos != null &&
+        (this._lastPenPos.x !== home.x || this._lastPenPos.y !== home.y)
+      ) {
         const travel = rewindTravelMotion(plan, this._lastPenPos, home);
         await withTimeout(this.ebb.executeMotion(travel), 150000, "travelHome");
       } else if (this._lastPenPos == null) {
@@ -523,10 +598,25 @@ export class Bit2AtomDriver extends BaseDriver {
     });
   }
 
+  /** 构造绘制/补画请求头：源文件名与图层信息（供服务端任务日志使用） */
+  private plotHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.plotFileName != null) {
+      headers["X-Plot-Filename"] = this.plotFileName;
+    }
+    if (this.plotLayerInfo != null) {
+      headers["X-Plot-Layers"] = encodeURIComponent(JSON.stringify(this.plotLayerInfo));
+    }
+    if (this.plotStepsPerMm != null) {
+      headers["X-Plot-Steps-Per-Mm"] = String(this.plotStepsPerMm);
+    }
+    return headers;
+  }
+
   public plot(plan: Plan) {
     fetch("/plot", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: this.plotHeaders(),
       body: JSON.stringify(plan.serialize()),
     })
       .then(async (res) => {
@@ -572,7 +662,7 @@ export class Bit2AtomDriver extends BaseDriver {
     void plan;
     fetch("/redraw", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: this.plotHeaders(),
       body: JSON.stringify({ from, to }),
     }).catch((e) => alert(`补画请求发送失败：${(e as Error).message}`));
   }

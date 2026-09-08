@@ -215,6 +215,8 @@ Bit2AtomBot 是一款基于 Web 的笔式绘图仪控制系统，支持 AxiDraw 
 - **总路径统计**：`Plan.totalDistance()` 实时显示走笔总路程
 - **清除 SVG**：预览区一键清除，方便更换文件
 - **预计时长/剩余时间**、暂停/继续/取消贯穿绘制与模拟全程
+- **排版设置（placement）**：水平/垂直定位锚点（左中右 × 上中下）+ 自定义 X/Y 偏移，「适应页面」（`scaleToPaper`）与「对齐边距」（`alignToMargins`）两种缩放模式均按锚点计算偏移；UI 独立分区展示，缺省居中行为与旧版一致
+- **标尺拖拽防误选**：预览画布与标尺 `user-select: none` + 指针按下 `preventDefault`，缩放/平移拖拽中刻度数字不再被浏览器选中文本变蓝
 
 ### 4.7 架构精简与去依赖化
 
@@ -224,7 +226,7 @@ Bit2AtomBot 是一款基于 Web 的笔式绘图仪控制系统，支持 AxiDraw 
 ### 4.8 工程化改进
 
 - **品牌化**：`saxi` → `bit2atombot`（包名/CLI 命令/日志前缀/环境变量 `SAXI_*` → `BIT2ATOM_*`），自定义 logo
-- **测试扩充**：vitest 用例从 20 → 34，新增回溯专项（算法单元 + 服务端集成 + 连续回溯场景）与补画归位集成场景
+- **测试扩充**：vitest 用例从 20 → 40，新增回溯专项（算法单元 + 服务端集成 + 连续回溯场景）、补画归位集成场景、排版锚点（placement）单元与串口写入失败回归用例
 - **Lint 零告警**：清理全部 10 项历史遗留（4 处 `parseInt` 缺 radix、4 处失效的 biome-ignore/eslint-disable 注释、useEffect 多余依赖、CSS 降序特异性），biome 检查 30 文件 0 error / 0 warning / 0 info
 - **分发包**：跨平台源码包（install/start 脚本、预构建产物、发布说明），支持 Windows/macOS/Linux
 

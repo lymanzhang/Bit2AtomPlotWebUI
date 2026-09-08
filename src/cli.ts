@@ -10,7 +10,7 @@ import { hideBin } from "yargs/helpers";
 import type { Hardware } from "./ebb.js";
 import { replan } from "./massager.js";
 import { PaperSize } from "./paper-size.js";
-import { getDevice, defaultPlanOptions, type PlanOptions } from "./planning.js";
+import { defaultPlanOptions, getDevice, type PlanOptions } from "./planning.js";
 import { connectEBB, startServer } from "./server.js";
 import { formatDuration } from "./util.js";
 
@@ -182,7 +182,7 @@ export function cli(argv: string[]): void {
           paperSize,
           marginMm: args.margin,
           hardware: args.hardware,
-          penHome: {"x": 0, "y": 0},
+          penHome: { x: 0, y: 0 },
 
           selectedGroupLayers: new Set([]), // TODO
           selectedStrokeLayers: new Set([]), // TODO
@@ -204,6 +204,7 @@ export function cli(argv: string[]): void {
           fitPage: args["fit-page"],
           cropToMargins: args["crop-to-margins"],
           rotateDrawing: args["rotate-drawing"],
+          placement: defaultPlanOptions.placement,
 
           minimumPathLength: args["minimum-path-length"],
           pathJoinRadius: args["path-join-radius"],
@@ -230,7 +231,11 @@ export function cli(argv: string[]): void {
       "put the pen to [percent]",
       (yargs) =>
         yargs
-          .positional("percent", { type: "number", description: "percent height between 0 and 100", demandOption: true })
+          .positional("percent", {
+            type: "number",
+            description: "percent height between 0 and 100",
+            demandOption: true,
+          })
           .check((args) => args.percent >= 0 && args.percent <= 100),
       async (args) => {
         console.log("connecting to plotter...");
@@ -267,13 +272,7 @@ export function cli(argv: string[]): void {
             default: "200mb",
           }),
       (args) => {
-        startServer(
-          args.port,
-          args.hardware,
-          args.device,
-          args["enable-cors"],
-          args["max-payload-size"],
-        );
+        startServer(args.port, args.hardware, args.device, args["enable-cors"], args["max-payload-size"]);
       },
     )
     .parse(argv);

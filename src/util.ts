@@ -35,27 +35,114 @@ function extent(pointLists: Vec2[][]): [Vec2, Vec2] {
 }
 
 /**
+ * Drawing placement within the margin box. `custom*` offsets are relative to
+ * the margin box top-left corner, in mm.
+ */
+export interface Placement {
+  alignH: "left" | "center" | "right" | "custom";
+  alignV: "top" | "middle" | "bottom" | "custom";
+  customXMm: number;
+  customYMm: number;
+}
+
+export const defaultPlacement: Placement = {
+  alignH: "center",
+  alignV: "middle",
+  customXMm: 0,
+  customYMm: 0,
+};
+
+/**
+ * Top-left position (in target coordinates) of a bbox of size (scaledW, scaledH)
+ * placed inside the target box according to the placement anchors.
+ */
+function anchorOffset(scaledW: number, scaledH: number, targetMin: Vec2, targetMax: Vec2, placement: Placement): Vec2 {
+  let x: number;
+  switch (placement.alignH) {
+    case "left":
+      x = targetMin.x;
+      break;
+    case "right":
+      x = targetMax.x - scaledW;
+      break;
+    case "custom":
+      x = targetMin.x + placement.customXMm;
+      break;
+    default:
+      x = targetMin.x + (targetMax.x - targetMin.x - scaledW) / 2;
+  }
+  let y: number;
+  switch (placement.alignV) {
+    case "top":
+      y = targetMin.y;
+      break;
+    case "bottom":
+      y = targetMax.y - scaledH;
+      break;
+    case "custom":
+      y = targetMin.y + placement.customYMm;
+      break;
+    default:
+      y = targetMin.y + (targetMax.y - targetMin.y - scaledH) / 2;
+  }
+  return { x, y };
+}
+
+/**
  * Scale pointLists to fit within the bounding box specified by (targetMin, targetMax).
  *
  * Preserves aspect ratio, scaling as little as possible to completely fit within the box.
  *
- * Also centers the paths within the box.
+ * The drawing is positioned inside the box according to the placement anchors
+ * (default: centered both ways).
  */
-function scaleToFit(pointLists: Vec2[][], targetMin: Vec2, targetMax: Vec2): Vec2[][] {
+function scaleToFit(pointLists: Vec2[][], targetMin: Vec2, targetMax: Vec2, placement: Placement): Vec2[][] {
   const [min, max] = extent(pointLists);
   const availWidthMm = targetMax.x - targetMin.x;
   const availHeightMm = targetMax.y - targetMin.y;
   const scaleFitX = availWidthMm / (max.x - min.x);
   const scaleFitY = availHeightMm / (max.y - min.y);
   const scale = Math.min(scaleFitX, scaleFitY);
-  const targetCenter = vadd(targetMin, vmul(vsub(targetMax, targetMin), 0.5));
-  const offset = vsub(targetCenter, vmul(vsub(max, min), scale * 0.5));
-  return pointLists.map((pl) => pl.map((p) => vadd(vmul(vsub(p, min), scale), offset)));
+  const anchor = anchorOffset((max.x - min.x) * scale, (max.y - min.y) * scale, targetMin, targetMax, placement);
+  const offset = vadd(anchor, vmul(min, -scale));
+  return pointLists.map((pl) => pl.map((p) => vadd(vmul(p, scale), offset)));
 }
 
 /** Scale a drawing to fill a piece of paper, with the given size and margins. */
-export function scaleToPaper(pointLists: Vec2[][], paperSize: PaperSize, marginMm: number): Vec2[][] {
-  return scaleToFit(pointLists, { x: marginMm, y: marginMm }, vsub(paperSize.size, { x: marginMm, y: marginMm }));
+export function scaleToPaper(
+  pointLists: Vec2[][],
+  paperSize: PaperSize,
+  marginMm: number,
+  placement: Placement = defaultPlacement,
+): Vec2[][] {
+  return scaleToFit(
+    pointLists,
+    { x: marginMm, y: marginMm },
+    vsub(paperSize.size, { x: marginMm, y: marginMm }),
+    placement,
+  );
+}
+
+/**
+ * Translate pointLists (1:1, no scaling) so that the drawing's bounding box is
+ * positioned inside the margin box according to the placement anchors.
+ */
+export function alignToMargins(
+  pointLists: Vec2[][],
+  paperSize: PaperSize,
+  marginMm: number,
+  placement: Placement = defaultPlacement,
+): Vec2[][] {
+  const [min, max] = extent(pointLists);
+  const anchor = anchorOffset(
+    max.x - min.x,
+    max.y - min.y,
+    { x: marginMm, y: marginMm },
+    vsub(paperSize.size, { x: marginMm, y: marginMm }),
+    placement,
+  );
+  const offset = vsub(anchor, min);
+  return pointLists.map((pl) => pl.map((p) => vadd(p, offset)));
 }
 
 /**

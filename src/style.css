@@ -1825,3 +1825,72 @@ summary:focus {
   scrollbar-color: #4a4a4a transparent;
 }
 
+/* ===== 预览缩放/平移 ===== */
+/* 画布内文字（标尺刻度值等）禁止文本选择，避免拖拽平移时出现蓝色选区 */
+.preview-canvas,
+.preview-canvas text {
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* 放大后可拖拽平移 */
+.preview-canvas.zoomed {
+  cursor: grab;
+}
+.preview-canvas.dragging {
+  cursor: grabbing;
+}
+
+/* 预览缩放工具条（右上角悬浮） */
+.preview-toolbar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.45);
+  color: whitesmoke;
+  font-size: 12px;
+  user-select: none;
+  z-index: 10;
+}
+/* 覆盖通用 button 的 width:100% / 边框样式 */
+.preview-toolbar button {
+  width: auto;
+  margin-bottom: 0;
+  border: none;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  color: inherit;
+  padding: 1px 7px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: none;
+}
+.preview-toolbar button:hover,
+.preview-toolbar button:focus {
+  background: rgba(255, 255, 255, 0.25);
+  box-shadow: none;
+}
+.preview-toolbar span {
+  min-width: 38px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-theme="dark"] .preview-toolbar {
+  background: rgba(60, 60, 60, 0.75);
+  color: #cccccc;
+}
+[data-theme="dark"] .preview-toolbar button {
+  background: rgba(255, 255, 255, 0.1);
+  color: inherit;
+}
+[data-theme="dark"] .preview-toolbar button:hover,
+[data-theme="dark"] .preview-toolbar button:focus {
+  background: rgba(255, 255, 255, 0.22);
+}
+

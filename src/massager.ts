@@ -1,9 +1,9 @@
 import type { Path } from "flatten-svg";
 import { elideShorterThan, merge as joinNearbyPaths, reorder as sortPaths } from "optimize-paths";
-import { getDevice, type Plan, type PlanOptions, plan, computeStepsPerMm, isBuiltinHardware } from "./planning.js";
-import { cropToMargins, dedupPoints, scaleToPaper } from "./util.js";
-import { type Vec2, vmul, vrot } from "./vec.js";
 import { removeHiddenLines } from "./hiding.js";
+import { computeStepsPerMm, getDevice, isBuiltinHardware, type Plan, type PlanOptions, plan } from "./planning.js";
+import { alignToMargins, cropToMargins, dedupPoints, defaultPlacement, scaleToPaper } from "./util.js";
+import { type Vec2, vmul, vrot } from "./vec.js";
 
 // CSS, and thus SVG, defines 1px = 1/96th of 1in
 // https://www.w3.org/TR/css-values-4/#absolute-lengths
@@ -43,10 +43,12 @@ export function replan(inPaths: Path[], planOptions: PlanOptions): Plan {
 
   // Compute scaling using _all_ the paths, so it's the same no matter what
   // layers are selected.
+  const placement = planOptions.placement ?? defaultPlacement;
   if (planOptions.fitPage) {
-    paths = scaleToPaper(paths, planOptions.paperSize, planOptions.marginMm);
+    paths = scaleToPaper(paths, planOptions.paperSize, planOptions.marginMm, placement);
   } else {
     paths = paths.map((ps) => ps.map((p) => vmul(p, mmPerSvgUnit)));
+    paths = alignToMargins(paths, planOptions.paperSize, planOptions.marginMm, placement);
     if (planOptions.cropToMargins) {
       paths = cropToMargins(paths, planOptions.paperSize, planOptions.marginMm);
     }

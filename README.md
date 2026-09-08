@@ -255,11 +255,13 @@ node cli.mjs
 | `npm run build:ui`     | 仅编译前端 UI          |
 | `npm run build`        | 构建服务器 + 前端      |
 | `npm run lint`         | 代码静态检查（biome，当前 0 告警） |
-| `npm test`             | 运行测试套件（vitest，34 个用例） |
+| `npm test`             | 运行测试套件（vitest，40 个用例） |
 
-### 运行日志
+### 运行日志与任务日志
 
-服务端每次启动自动将日志写入 `logs/bit2atombot-<日期>-<时间>.log`（终端输出同步保留），每行带本地时间戳与级别标记，包含绘制/补画耗时、归位分步耗时（probe/pen/motors/travel/idle/disable）、通信探活等性能数据，便于事后分析评估。自动保留最近 50 个日志文件。
+**运行日志**：服务端每次启动自动将日志写入 `logs/bit2atombot-<日期>-<时间>.log`（终端输出同步保留），每行带本地时间戳与级别标记，包含绘制/补画耗时、归位分步耗时（probe/pen/motors/travel/idle/disable）、通信探活等性能数据，便于事后分析评估。自动保留最近 50 个日志文件。
+
+**绘制任务日志**：每次开始绘制或补画时，自动在 `logs/` 下生成与源文件同名的任务日志（`logs/[源文件名]__<时间戳>.log`），从项目管理角度完整记录一次任务：任务头包含源文件名、任务模式（plot/redraw 及区间）、图层过滤方式与绘制图层、硬件与端口、FIFO 深度、动作总数、预计时长、预计绘制距离、计划最大速度、开始时间；过程记录包含进度心跳、暂停/恢复/取消与错误诊断（含运动超时后的设备 `QM` 状态探测）；任务尾汇总实际时长、实际绘制距离与结束状态（success/failed/cancelled）。绘制过程中的终端输出自动同步进日志。
 
 ```bash
 # 自定义日志目录（默认 logs/）
@@ -346,7 +348,9 @@ cross-env IS_WEB=1 npm run build:ui
 
 版本发布记录见 [CHANGELOG.md](CHANGELOG.md)。
 
-**最新版本 [v0.18.0](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.18.0)**（2026-09-07 发布）：修复长时绘制中串口写入失败（错误码 31）导致服务静默崩溃的问题（写入错误注入命令队列 + `error` 事件监听 + unhandled rejection 兜底）；修复 Affinity 导出 SVG（单 `<path>` 多 `M` 子路径）在预览/绘制中拆成两块的矩阵变换丢失问题；新增运行日志落盘（`logs/` 目录，自动保留最近 50 个）。
+**最新版本 [v0.19.0](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.19.0)**（2026-09-08 发布）：新增按源文件归档的绘制任务日志（含图层信息、距离/速度/时长统计，便于项目管理）；新增排版设置（水平/垂直定位锚点 + 自定义偏移）；修复长时绘制中单条长动作被固定 150s 超时误杀（改为按估计时长动态计算）、LM 速率编码溢出导致运动引擎停摆（钳制 ≤24999 步/s）、深 FIFO 图形绘制结束时「电机未归位」误报（排空超时动态计算）、运动超时后命令队列错位导致笔不抬起、任务日志绘制距离与 UI 显示不一致（block 累加 + 步进密度换算）、标尺刻度数字拖拽中被选中变蓝等问题。
+
+历史版本 [v0.18.0](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.18.0)（2026-09-07 发布）：修复长时绘制中串口写入失败（错误码 31）导致服务静默崩溃的问题（写入错误注入命令队列 + `error` 事件监听 + unhandled rejection 兜底）；修复 Affinity 导出 SVG（单 `<path>` 多 `M` 子路径）在预览/绘制中拆成两块的矩阵变换丢失问题；新增运行日志落盘（`logs/` 目录，自动保留最近 50 个）。
 
 ---
 

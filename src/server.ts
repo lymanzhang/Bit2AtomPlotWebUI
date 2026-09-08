@@ -17,12 +17,22 @@ import express from "express";
 import type WebSocket from "ws";
 import { WebSocketServer } from "ws";
 import { EBB, type Hardware } from "./ebb.js";
-import { type Motion, type MotionData, PenMotion, Plan, rewindTravelMotion, snapToGroupStart, getDevice, XYMotion } from "./planning.js";
+import { PlotLogger } from "./plot-log.js";
+import {
+  getDevice,
+  type Motion,
+  type MotionData,
+  PenMotion,
+  Plan,
+  rewindTravelMotion,
+  snapToGroupStart,
+  XYMotion,
+} from "./planning.js";
 import { startRunLog } from "./run-log.js";
-import type { Vec2 } from "./vec.js";
 import { SerialPortSerialPort } from "./serialport-serialport.js";
 import * as _self from "./server.js"; // use self-import for test mocking
 import { formatDuration } from "./util.js";
+import { type Vec2, vlen, vsub } from "./vec.js";
 
 type Com = string;
 
@@ -89,6 +99,78 @@ export async function startServer(
   let lastPlan: MotionData[] | null = null;
   // The "wake lock unavailable" reminder is informational; only print it once.
   let wakeLockReminderShown = false;
+  // 当前绘制任务的文件级日志（每次 /plot 或 /redraw 一个文件，与源文件同名）
+  let plotLogger: PlotLogger | null = null;
+  // 当前任务已实际绘制的距离（mm），由 doPlot 累加
+  let plottedDistanceMm = 0;
+  // 计划坐标的步进密度（步/mm）。Plan 的全部坐标与速度都在全步进空间
+  // （mm×stepsPerMm），换算真实毫米值必需；由前端经请求头提供。
+  let plotStepsPerMm = getDevice(hardware).stepsPerMm;
+
+  /** 从请求头解析步进密度（X-Plot-Steps-Per-Mm），缺失或非法时返回 null。 */
+  function parseStepsPerMm(req: Request): number | null {
+    const header = req.headers["x-plot-steps-per-mm"];
+    if (typeof header === "string") {
+      const value = Number(header);
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+    return null;
+  }
+
+  /** 依据请求头中的源文件名（X-Plot-Filename）、图层信息（X-Plot-Layers）
+   * 与步进密度（X-Plot-Steps-Per-Mm）创建任务日志。测试环境跳过。 */
+  function createPlotLogger(req: Request, plan: Plan, mode: string, stepsPerMm: number): PlotLogger | null {
+    if (process.env.NODE_ENV === "test") {
+      return null;
+    }
+    const header = req.headers["x-plot-filename"];
+    const fileName = typeof header === "string" && header.trim().length > 0 ? header : "untitled.svg";
+    // 图层信息为 URI 编码的 JSON（图层名可含中文等非 ASCII 字符）
+    let layerInfo: { mode: string; layers: string[] } | null = null;
+    const layersHeader = req.headers["x-plot-layers"];
+    if (typeof layersHeader === "string" && layersHeader.length > 0) {
+      try {
+        const parsed = JSON.parse(decodeURIComponent(layersHeader));
+        if (typeof parsed?.mode === "string" && Array.isArray(parsed?.layers)) {
+          layerInfo = { mode: parsed.mode, layers: parsed.layers.map(String) };
+        }
+      } catch {
+        console.warn(`Ignored malformed X-Plot-Layers header: ${layersHeader}`);
+      }
+    }
+    let maxVelocityStepsS = 0;
+    let estimatedDistanceSteps = 0;
+    for (const m of plan.motions) {
+      if (m instanceof XYMotion) {
+        // 按 block 累加路径长度（动作级 p2-p1 只是首尾直线距离，
+        // 对由上万短段组成的路径会低估数百倍）。注意 Plan 坐标处于
+        // 全步进空间（mm×stepsPerMm），需除以步进密度换算为毫米。
+        for (const b of m.blocks) {
+          estimatedDistanceSteps += vlen(vsub(b.p2, b.p1));
+          maxVelocityStepsS = Math.max(maxVelocityStepsS, b.vInitial, b.vFinal);
+        }
+      }
+    }
+    const estimatedDistanceMm = estimatedDistanceSteps / stepsPerMm;
+    const maxVelocityMmS = maxVelocityStepsS / stepsPerMm;
+    const logger = new PlotLogger();
+    logger
+      .start({
+        fileName,
+        mode,
+        layerMode: layerInfo?.mode,
+        layers: layerInfo?.layers,
+        hardware: ebb?.hardware ?? "sim",
+        port: (ebb?.port as any)?._path ?? null,
+        fifoDepth: ebb?.fifoDepth ?? -1,
+        motionCount: plan.motions.length,
+        estimatedDurationSec: plan.duration(),
+        estimatedDistanceMm,
+        maxVelocityMmS,
+      })
+      .catch((e) => console.warn(`Plot log start failed: ${(e as Error).message}`));
+    return logger;
+  }
 
   wss.on("connection", (ws) => {
     clients.push(ws);
@@ -161,11 +243,23 @@ export async function startServer(
       const plan = Plan.deserialize(req.body);
       currentPlan = req.body;
       lastPlan = req.body;
+      // 任务日志先启动，随后的 console 输出（含设备层诊断）自动进入日志文件
+      const headerSpm = parseStepsPerMm(req);
+      plotStepsPerMm = headerSpm ?? getDevice(ebb?.hardware ?? hardware).stepsPerMm;
+      plotLogger = createPlotLogger(req, plan, "plot", plotStepsPerMm);
+      if (headerSpm == null) {
+        console.warn(
+          `缺少 X-Plot-Steps-Per-Mm 请求头，按硬件档案兜底 ${plotStepsPerMm} 步/mm。` +
+            `custom 硬件下任务日志的距离/速度可能不准，请更新前端页面后重试。`,
+        );
+      }
+      plottedDistanceMm = 0;
       console.log(`Received plan of estimated duration ${formatDuration(plan.duration())}`);
       console.log(ebb != null ? "Beginning plot..." : "Simulating plot...");
       res.status(200).end();
 
       const begin = Date.now();
+      let failureReason: string | null = null;
       let wakeLock: { release(): void } | null = null;
 
       // The wake-lock module is macOS-only. Log the reminder once per process,
@@ -183,19 +277,28 @@ export async function startServer(
         console.log("Wake lock not available on this platform. Ensure your machine does not sleep during plotting");
       }
       try {
-        await doPlot(ebb != null ? realPlotter : simPlotter, plan, signal);
+        await doPlot(ebb != null ? realPlotter : simPlotter, plan, signal, plotLogger);
         const end = Date.now();
         console.log(`Plot took ${formatDuration((end - begin) / 1000)}`);
       } catch (e) {
         // 兜底：此时 200 响应已发出，无法再改状态码；串口命令超时等
         // 失败若无人处理会成为 unhandled rejection。记录错误并广播
         // cancelled，让 UI 退出绘制状态（doPlot 的 finally 已清 motionIdx）。
+        failureReason = (e as Error).message;
         console.error("Plot failed:", e);
         broadcast({ c: "cancelled" });
       } finally {
         if (wakeLock) {
           wakeLock.release();
         }
+        const logger = plotLogger;
+        plotLogger = null;
+        await logger?.finish({
+          status: failureReason != null ? "failed" : signal.aborted ? "cancelled" : "success",
+          reason: failureReason ?? undefined,
+          actualDurationSec: (Date.now() - begin) / 1000,
+          actualDistanceMm: plottedDistanceMm,
+        });
       }
     } finally {
       plotting = false;
@@ -208,6 +311,7 @@ export async function startServer(
   });
 
   app.post("/cancel", (_req: Request, res: Response) => {
+    plotLogger?.line("PLOT", "收到取消请求");
     if (controller) {
       controller.abort();
       controller = null;
@@ -227,6 +331,7 @@ export async function startServer(
       unpaused = new Promise((resolve) => {
         signalUnpause = resolve;
       });
+      plotLogger?.line("PLOT", `收到暂停请求（当前进度 ${motionIdx ?? "?"}）`);
       broadcast({ c: "pause", p: { paused: true } });
     }
     res.status(200).end();
@@ -274,10 +379,21 @@ export async function startServer(
     const { signal } = controller;
     res.status(200).end();
     const begin = Date.now();
+    let logger: PlotLogger | null = null;
     try {
       const plan = Plan.deserialize(lastPlan);
+      const headerSpmRedraw = parseStepsPerMm(req);
+      plotStepsPerMm = headerSpmRedraw ?? getDevice(ebb?.hardware ?? hardware).stepsPerMm;
+      logger = createPlotLogger(req, plan, `redraw [${from}, ${to})`, plotStepsPerMm);
+      if (headerSpmRedraw == null) {
+        console.warn(
+          `缺少 X-Plot-Steps-Per-Mm 请求头，按硬件档案兜底 ${plotStepsPerMm} 步/mm。` +
+            `custom 硬件下任务日志的距离/速度可能不准，请更新前端页面后重试。`,
+        );
+      }
+      plottedDistanceMm = 0;
       console.log(`Redrawing motions [${from}, ${to})`);
-      await doPlot(ebb != null ? realPlotter : simPlotter, plan, signal, { redrawFrom: from, redrawTo: to });
+      await doPlot(ebb != null ? realPlotter : simPlotter, plan, signal, logger, { redrawFrom: from, redrawTo: to });
       console.log(`Redraw took ${formatDuration((Date.now() - begin) / 1000)}`);
       // 补画完成后自动归位：方便取纸检查，且保证位置跟踪始终已知，
       // 下次补画无需手动「笔回原点」。
@@ -293,7 +409,16 @@ export async function startServer(
       // 同 /plot：防止 async rejection 使进程崩溃，并让 UI 退出绘制状态。
       console.error("Redraw failed:", e);
       broadcast({ c: "cancelled" });
+      logger?.line("ERROR", `Redraw failed: ${(e as Error).message}`);
     } finally {
+      const finishLogger = logger ?? plotLogger;
+      logger = null;
+      plotLogger = null;
+      await finishLogger?.finish({
+        status: signal.aborted ? "cancelled" : "success",
+        actualDurationSec: (Date.now() - begin) / 1000,
+        actualDistanceMm: plottedDistanceMm,
+      });
       plotting = false;
       controller = null;
     }
@@ -391,7 +516,10 @@ export async function startServer(
         lastPenPos = home;
         console.log(`Home: done in ${((Date.now() - homeStart) / 1000).toFixed(1)}s (${stepTimes.join(", ")}).`);
       } catch (e) {
-        console.error(`Home failed after ${((Date.now() - homeStart) / 1000).toFixed(1)}s (${stepTimes.join(", ")}):`, e);
+        console.error(
+          `Home failed after ${((Date.now() - homeStart) / 1000).toFixed(1)}s (${stepTimes.join(", ")}):`,
+          e,
+        );
         // 归位失败时位置不可信，标记为未知（下次补画前需重新归位），
         // 并清空可能卡死的命令队列，让后续命令可以重新尝试。
         lastPenPos = null;
@@ -436,8 +564,8 @@ export async function startServer(
   interface Plotter {
     prePlot: (initialPenHeight: number) => Promise<void>;
     executeMotion: (m: Motion, progress: [number, number]) => Promise<void>;
-    postCancel: (initialPenHeight: number) => Promise<void>;
-    postPlot: () => Promise<void>;
+    postCancel: (initialPenHeight: number, drainTimeoutMs: number) => Promise<void>;
+    postPlot: (drainTimeoutMs: number, penUpHeight: number) => Promise<void>;
   }
 
   const realPlotter: Plotter = {
@@ -449,24 +577,84 @@ export async function startServer(
       await withTimeout(ebb.enableMotors(1), 15000, "prePlot:enableMotors"); // 16x microstepping, matches defaults from Axidraw
       await withTimeout(ebb.setPenHeight(initialPenHeight, 1000, 1000), 15000, "prePlot:setPenHeight");
     },
-    async executeMotion(motion: Motion, _progress: [number, number]): Promise<void> {
-      // 单动作超时兜底：LM/XM 指令在 EBB FIFO 接受后即返回（毫秒级），
-      // 150s 只会在队列卡死时触发；doPlot 中该 await 仍与 abortPromise 竞速，
-      // 超时让循环带错退出而不是永久挂起。
-      await withTimeout(ebb.executeMotion(motion), 150000, "executeMotion");
+    async executeMotion(motion: Motion, progress: [number, number]): Promise<void> {
+      // 150s 下限用于短动作的卡死检测；但单条长动作（如由上万短段组成的
+      // 巨长路径，或被速率钳制减速的高速行程）在设备侧的真实执行时长可达
+      // 数十分钟——FIFO=1 时主机会同步等设备画完，硬性 150s 必然误杀。
+      // 超时上限按钳制后的估计执行时长 + 60s 裕量动态放宽。
+      const estimatedMs = ebb.estimateMotionDurationSec(motion) * 1000;
+      const timeoutMs = Math.max(150_000, estimatedMs + 60_000);
+      try {
+        await withTimeout(ebb.executeMotion(motion), timeoutMs, "executeMotion");
+      } catch (e) {
+        // 命令应答丢失/设备引擎停摆会让队列头永久挂起；响应按入队顺序匹配，
+        // 之后所有命令的响应都会错位。清空队列并等过沉降期（孤儿应答会被
+        // 丢弃），让 postPlot 的抬笔/断使能兜底能正确送达设备。
+        ebb.cancel();
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        try {
+          console.log(
+            `QM after motion failure at ${progress[0] + 1}/${progress[1]} (${motion.constructor.name}):`,
+            await withTimeout(ebb.query("QM"), 5000, "QM probe"),
+          );
+        } catch {
+          console.log("QM probe failed (device not responding)");
+        }
+        throw e;
+      }
     },
-    async postCancel(initialPenHeight: number): Promise<void> {
+    async postCancel(initialPenHeight: number, drainTimeoutMs: number): Promise<void> {
       // The board may still be executing motion queued in its FIFO; issuing
       // HM while moving makes the steppers grind against whatever they're doing.
-      // waitUntilMotorsIdle 传 60s：取消时 FIFO 中可能还排着多条动作，
-      // 内部默认 30s 对大 FIFO 不够。队列卡死时这些超时保证 plotting 复位。
-      await withTimeout(ebb.waitUntilMotorsIdle(60000), 65000, "postCancel:waitUntilMotorsIdle");
+      // 深FIFO（fw≥3.0）下主机会领先设备最多 depth 条动作，取消时设备侧
+      // 积压可达数分钟，固定 60s 不够——由 doPlot 按 plan 时长传排空上限。
+      try {
+        await withTimeout(
+          ebb.waitUntilMotorsIdle(drainTimeoutMs),
+          drainTimeoutMs + 5000,
+          "postCancel:waitUntilMotorsIdle",
+        );
+      } catch (e) {
+        // 排空超时（设备故障/积压异常）：先尽力抬笔（避免笔压在纸上），
+        // 再断使能避免长期锁轴，最后抛出让上层通知 UI。
+        try {
+          await withTimeout(ebb.setPenHeight(initialPenHeight, 1000), 15000, "postCancel:setPenHeight(fallback)");
+        } catch {
+          /* ignore */
+        }
+        try {
+          await withTimeout(ebb.disableMotors(), 15000, "postCancel:disableMotors(fallback)");
+        } catch {
+          /* ignore */
+        }
+        throw e;
+      }
       await withTimeout(ebb.setPenHeight(initialPenHeight, 1000), 15000, "postCancel:setPenHeight");
       // 此处 HM 是安全的：绘制全程电机保持使能，EBB 原点未被重置（见 homePenNow 注释）。
       await withTimeout(ebb.command("HM,4000"), 150000, "postCancel:HM"); // HM returns carriage home without 3rd and 4th arguments
     },
-    async postPlot(): Promise<void> {
-      await withTimeout(ebb.waitUntilMotorsIdle(60000), 65000, "postPlot:waitUntilMotorsIdle");
+    async postPlot(drainTimeoutMs: number, penUpHeight: number): Promise<void> {
+      try {
+        await withTimeout(
+          ebb.waitUntilMotorsIdle(drainTimeoutMs),
+          drainTimeoutMs + 5000,
+          "postPlot:waitUntilMotorsIdle",
+        );
+      } catch (e) {
+        // 排空超时（设备故障/积压异常）：设备可能停在动作中途，先尽力抬笔
+        //（避免笔尖压在纸上），再断使能避免长期锁轴，最后抛出。
+        try {
+          await withTimeout(ebb.setPenHeight(penUpHeight, 1000), 15000, "postPlot:setPenHeight(fallback)");
+        } catch {
+          /* ignore */
+        }
+        try {
+          await withTimeout(ebb.disableMotors(), 15000, "postPlot:disableMotors(fallback)");
+        } catch {
+          /* ignore */
+        }
+        throw e;
+      }
       await withTimeout(ebb.disableMotors(), 15000, "postPlot:disableMotors");
     },
   };
@@ -478,17 +666,18 @@ export async function startServer(
       console.log(`Motion ${progress[0] + 1}/${progress[1]}`);
       await new Promise((resolve) => setTimeout(resolve, motion.duration() * 1000));
     },
-    async postCancel(_initialPenHeight: number): Promise<void> {
+    async postCancel(_initialPenHeight: number, _drainTimeoutMs: number): Promise<void> {
       console.log("Plot cancelled");
     },
     // eslint-disable-next-line @typescript-eslint/no-empty-function
-    async postPlot(): Promise<void> {},
+    async postPlot(_drainTimeoutMs: number, _penUpHeight: number): Promise<void> {},
   };
 
   async function doPlot(
     plotter: Plotter,
     plan: Plan,
     signal: AbortSignal,
+    logger: PlotLogger | null = null,
     opts?: { redrawFrom?: number; redrawTo?: number },
   ): Promise<void> {
     const abortPromise = onceAbort(signal); // reuse abort promise
@@ -509,9 +698,22 @@ export async function startServer(
     if (!firstPenMotion) {
       throw new Error("Plan contains no PenMotion; cannot determine initial pen height");
     }
+    // 深FIFO（fw≥3.0）下 LM 进入设备侧 FIFO 即响应，主机可领先设备最多
+    // depth 条动作。motion 循环发完后设备可能仍有大量积压（高密度 SVG
+    // 的短动作尤其多），固定 60s 排空会误报「电机未归位」。积压时长至多
+    // 等于计划剩余总时长，用它 + 60s 裕量作为排空上限。注意按钳制后的
+    // 估计时长计算（plan.duration() 按未钳制速度算，高速行程被钳制时会
+    // 低估数倍）。
+    let estimatedBusySec = 0;
+    for (const m of plan.motions) {
+      estimatedBusySec += ebb.estimateMotionDurationSec(m);
+    }
+    const drainTimeoutMs = Math.ceil(estimatedBusySec * 1000) + 60_000;
     await plotter.prePlot(firstPenMotion.initialPos);
 
     let penIsUp = true;
+    let plotError: unknown = null;
+    let cleanupFailure: unknown = null;
     try {
       // Current pen position. For a fresh plot the pen starts at the plan's
       // initial pen home (p1 of the first travel move); for a redraw-range run
@@ -552,12 +754,21 @@ export async function startServer(
         await Promise.race([plotter.executeMotion(motion, [idx, endIdx]), abortPromise]);
 
         if (motion instanceof XYMotion) {
+          // 落笔状态下移动才算实际绘制距离（抬笔的行程移动不计入）。
+          // 按 block 累加真实路径长度，并除以步进密度换算为毫米
+          // （Plan 坐标处于全步进空间 mm×stepsPerMm）。
+          if (!penIsUp) {
+            for (const b of motion.blocks) {
+              plottedDistanceMm += vlen(vsub(b.p2, b.p1)) / plotStepsPerMm;
+            }
+          }
           curPos = motion.p2;
           lastPenPos = curPos;
         }
         if (motion instanceof PenMotion) {
           penIsUp = motion.initialPos < motion.finalPos;
         }
+        logger?.progress(idx + 1, endIdx, plottedDistanceMm);
 
         if (unpaused && penIsUp) {
           await Promise.race([unpaused, abortPromise]);
@@ -592,7 +803,7 @@ export async function startServer(
       broadcast({ c: "finished" });
     } catch (err) {
       if (signal.aborted) {
-        await plotter.postCancel(firstPenMotion.initialPos);
+        await plotter.postCancel(firstPenMotion.initialPos, drainTimeoutMs);
         // The pen was homed (HM), which is the plan's initial pen home.
         for (const m of plan.motions) {
           if (m instanceof XYMotion) {
@@ -603,11 +814,28 @@ export async function startServer(
         broadcast({ c: "cancelled" });
         return;
       }
+      plotError = err; // 错误路径的 finally 用短排空尽快收尾（取消路径保留长排空）
       throw err; // propagate real errors
     } finally {
       motionIdx = null;
       currentPlan = null;
-      await plotter.postPlot();
+      // 出错路径下设备通常很快停止（或已停摆），按计划总时长的长排空毫无
+      // 意义，只会让抬笔/断使能兜底迟到：错误路径用短超时尽快收尾。
+      // 取消路径保留长排空（设备可能仍有大量积压需要画完再 HM）。
+      const cleanupDrainMs = plotError != null ? 60_000 : drainTimeoutMs;
+      try {
+        await plotter.postPlot(cleanupDrainMs, firstPenMotion.initialPos);
+      } catch (cleanupErr) {
+        if (plotError != null || signal.aborted) {
+          // 主流程已失败或已取消：仅记录清理失败，避免覆盖原始错误
+          console.error("Plot cleanup failed:", cleanupErr);
+        } else {
+          cleanupFailure = cleanupErr;
+        }
+      }
+    }
+    if (cleanupFailure != null) {
+      throw cleanupFailure;
     }
   }
 
