@@ -114,6 +114,21 @@ describe("Plot Endpoint Test Suite", () => {
       // Wait for first plot to complete to avoid affecting other tests
       await waitForPlottingComplete(server);
     });
+
+    test("reject plans outside the device working area", async () => {
+      // v3 行程 430×300mm × 5 步/mm = 2150×1500 步；把路径平移到行程外
+      const FAR_PLAN = plan(
+        [SIMPLE_PATHS[0].map((p) => ({ x: p.x + 4000, y: p.y + 4000 }))],
+        AxidrawFast,
+      ).serialize();
+      const response = await request(server).post("/plot").send(FAR_PLAN).expect(400);
+      expect(response.text).toContain("超出设备工作范围");
+      expect(response.text).toContain("804.0 mm"); // X 最大坐标超出 430mm 上限
+
+      // 行程内的计划不受影响
+      await request(server).post("/plot").send(SIMPLE_PLAN).expect(200);
+      await waitForPlottingComplete(server);
+    });
   });
 
   describe("Plot Control Operations", () => {

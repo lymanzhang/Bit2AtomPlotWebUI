@@ -19,7 +19,9 @@ import { WebSocketServer } from "ws";
 import { EBB, type Hardware } from "./ebb.js";
 import { PlotLogger } from "./plot-log.js";
 import {
+  type Device,
   getDevice,
+  isBuiltinHardware,
   type Motion,
   type MotionData,
   PenMotion,
@@ -115,6 +117,43 @@ export async function startServer(
       if (Number.isFinite(value) && value > 0) return value;
     }
     return null;
+  }
+
+  /** 扫描计划坐标范围（全步进空间，含落笔路径、抬笔空程与首尾行程），
+   * 超出设备工作范围时返回给用户的描述信息，未超界返回 null。
+   * 容差 0.5 步吸收浮点误差。 */
+  function planOutOfBounds(plan: Plan, device: Device, stepsPerMm: number): string | null {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const m of plan.motions) {
+      if (m instanceof XYMotion) {
+        for (const b of m.blocks) {
+          minX = Math.min(minX, b.p1.x, b.p2.x);
+          minY = Math.min(minY, b.p1.y, b.p2.y);
+          maxX = Math.max(maxX, b.p1.x, b.p2.x);
+          maxY = Math.max(maxY, b.p1.y, b.p2.y);
+        }
+      }
+    }
+    if (!Number.isFinite(minX)) return null;
+    const limitX = device.workingAreaMm.x * stepsPerMm;
+    const limitY = device.workingAreaMm.y * stepsPerMm;
+    const tol = 0.5;
+    if (minX >= -tol && minY >= -tol && maxX <= limitX + tol && maxY <= limitY + tol) {
+      return null;
+    }
+    const mm = (v: number) => (v / stepsPerMm).toFixed(1);
+    const parts: string[] = [];
+    if (minX < -tol) parts.push(`X 方向最小坐标 ${mm(minX)} mm 小于 0`);
+    if (minY < -tol) parts.push(`Y 方向最小坐标 ${mm(minY)} mm 小于 0`);
+    if (maxX > limitX + tol) parts.push(`X 方向最大坐标 ${mm(maxX)} mm 超出上限 ${mm(limitX)} mm`);
+    if (maxY > limitY + tol) parts.push(`Y 方向最大坐标 ${mm(maxY)} mm 超出上限 ${mm(limitY)} mm`);
+    return (
+      `计划坐标超出设备工作范围（${device.workingAreaMm.x}×${device.workingAreaMm.y} mm）：` +
+      `${parts.join("；")}。请缩小图形、更换纸张尺寸或调整排版后再试。`
+    );
   }
 
   /** 依据请求头中的源文件名（X-Plot-Filename）、图层信息（X-Plot-Layers）
@@ -255,6 +294,18 @@ export async function startServer(
       // 任务日志先启动，随后的 console 输出（含设备层诊断）自动进入日志文件
       const headerSpm = parseStepsPerMm(req);
       plotStepsPerMm = headerSpm ?? getDevice(ebb?.hardware ?? hardware).stepsPerMm;
+      // 工作范围校验：超出设备行程即拒绝任务（任务不启动、日志不创建），
+      // 防止撞轴。custom 硬件档案非真实机型，仅告警不拒绝。
+      const hardwareId = ebb?.hardware ?? hardware;
+      const outOfBounds = planOutOfBounds(plan, getDevice(hardwareId), plotStepsPerMm);
+      if (outOfBounds != null) {
+        if (isBuiltinHardware(hardwareId)) {
+          console.error(`拒绝绘制任务：${outOfBounds}`);
+          res.status(400).send(outOfBounds);
+          return;
+        }
+        console.warn(`custom 硬件按 Axidraw 档案校验超界（仅告警不拒绝）：${outOfBounds}`);
+      }
       plotLogger = createPlotLogger(req, plan, "plot", plotStepsPerMm);
       if (headerSpm == null) {
         console.warn(

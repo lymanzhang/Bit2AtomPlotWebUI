@@ -1856,6 +1856,22 @@ summary:focus {
   user-select: none;
   z-index: 10;
 }
+/* 图形超出设备工作范围时的警示条（预览底部居中） */
+.preview-warning {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  padding: 4px 12px;
+  border-radius: 4px;
+  background: rgba(244, 67, 54, 0.92);
+  color: #fff;
+  font-size: 12px;
+  user-select: none;
+  pointer-events: none;
+  z-index: 10;
+}
 /* 覆盖通用 button 的 width:100% / 边框样式 */
 .preview-toolbar button {
   width: auto;

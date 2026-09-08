@@ -799,6 +799,14 @@ function PlanPreview({
     : getDevice(state.planOptions.hardware).stepsPerMm;
   const strokeWidth = state.visualizationOptions.penStrokeWidth * stepsPerMm;
   const colorPathsByStrokeOrder = state.visualizationOptions.colorPathsByStrokeOrder;
+  // 设备工作范围（内置硬件才有可信行程）：纸张超出部分以红色标示，
+  // 服务端会拒绝坐标超界的绘制任务
+  const machineAreaMm = isBuiltinHardware(state.planOptions.hardware)
+    ? getDevice(state.planOptions.hardware).workingAreaMm
+    : null;
+  const paperOutOfBounds =
+    machineAreaMm != null &&
+    (ps.size.x > machineAreaMm.x + 0.5 || ps.size.y > machineAreaMm.y + 0.5);
   const memoizedPlanPreview = useMemo(() => {
     if (plan) {
       const palette = colorPathsByStrokeOrder
@@ -1218,6 +1226,11 @@ function PlanPreview({
         </button>
         <span title="当前缩放比例，滚轮或拖拽可检查图形细节">{Math.round(view.zoom * 100)}%</span>
       </div>
+      {paperOutOfBounds && (
+        <div className="preview-warning">
+          {`图形超出设备工作范围（${machineAreaMm?.x ?? "?"}×${machineAreaMm?.y ?? "?"} mm），红色区域无法绘制，开始绘制将被拒绝`}
+        </div>
+      )}
       {progressIndicator}
     </div>
   );

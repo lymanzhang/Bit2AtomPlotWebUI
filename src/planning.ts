@@ -146,6 +146,10 @@ export const getDevice = (hardware = "v3"): Device => {
 
 export interface Device {
   stepsPerMm: number;
+  /** 机械可用行程（自原点 0,0 起，mm）。服务端 /plot 据此拒绝超界任务、
+   * 前端预览据此标红超界区域，防止撞轴。custom 硬件沿用 Axidraw 值，
+   * 服务端仅告警不拒绝。 */
+  workingAreaMm: { x: number; y: number };
   // Practical min/max that you might ever want the pen servo to go on the AxiDraw
   // Units: 83ns resolution pwm output.
   penServoMin: number; // pen down
@@ -156,6 +160,9 @@ export interface Device {
 // Defaults: penup at 12000 (1ms), pendown at 16000 (1.33ms).
 const Axidraw: Device = {
   stepsPerMm: 5,
+
+  // AxiDraw V3 / iDraw H SE 标称行程
+  workingAreaMm: { x: 430, y: 300 },
 
   penServoMin: 7500, // pen down
   penServoMax: 28000, // pen up
@@ -170,6 +177,9 @@ const Axidraw: Device = {
 const AxidrawBrushless: Device = {
   stepsPerMm: 5,
 
+  // 与 AxiDraw V3 相同的机械结构
+  workingAreaMm: { x: 430, y: 300 },
+
   penServoMin: 5400, // pen down
   penServoMax: 12600, // pen up
 
@@ -182,6 +192,9 @@ const AxidrawBrushless: Device = {
 // NextDraw 2234 with brushless motor that requires 70%+ values
 const NextDraw2234: Device = {
   stepsPerMm: 5,
+
+  // 22×34 英寸标称行程（型号命名即纸张尺寸，8511/1117 同理）
+  workingAreaMm: { x: 559, y: 864 },
 
   penServoMin: 19600, // pen down - 70% of range
   penServoMax: 28000, // pen up - full range
