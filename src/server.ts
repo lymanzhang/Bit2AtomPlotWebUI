@@ -140,15 +140,24 @@ export async function startServer(
     }
     let maxVelocityStepsS = 0;
     let estimatedDistanceSteps = 0;
+    // 预计绘制距离只统计笔落段，与任务尾实际距离同口径（否则预计含
+    // 抬笔空程而实际不含，两者可差数米）。笔状态沿动作序列模拟：
+    // PenMotion 的 initialPos < finalPos 表示抬笔（伺服值越大笔越高），
+    // 与 doPlot 的统计逻辑一致。
+    let penIsUp = true;
     for (const m of plan.motions) {
       if (m instanceof XYMotion) {
         // 按 block 累加路径长度（动作级 p2-p1 只是首尾直线距离，
         // 对由上万短段组成的路径会低估数百倍）。注意 Plan 坐标处于
         // 全步进空间（mm×stepsPerMm），需除以步进密度换算为毫米。
         for (const b of m.blocks) {
-          estimatedDistanceSteps += vlen(vsub(b.p2, b.p1));
           maxVelocityStepsS = Math.max(maxVelocityStepsS, b.vInitial, b.vFinal);
+          if (!penIsUp) {
+            estimatedDistanceSteps += vlen(vsub(b.p2, b.p1));
+          }
         }
+      } else if (m instanceof PenMotion) {
+        penIsUp = m.initialPos < m.finalPos;
       }
     }
     const estimatedDistanceMm = estimatedDistanceSteps / stepsPerMm;
