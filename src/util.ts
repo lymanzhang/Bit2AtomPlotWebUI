@@ -34,6 +34,12 @@ const svgUnitToMm: Record<string, number> = {
  *
  * width 缺失、为百分比（如 "100%"，物理尺寸信息已丢失）或数值非法时
  * 返回 undefined，调用方应回退到 96dpi 缺省值（defaultMmPerSvgUnit）。
+ *
+ * 调用链：ui.tsx readSvg()（文件导入/剪贴板粘贴）与 cli.ts plot 子命令
+ * 在导入时调用一次 → 结果经 PlanOptions.mmPerSvgUnit 传入规划 worker →
+ * massager.replan 以 `mmPerSvgUnit ?? defaultMmPerSvgUnit` 取用（缩放、
+ * 旋转中心换算）。 massager.ts 内不再重复解析 SVG，保证 UI 与 CLI 口径
+ * 一致。
  */
 export function mmPerSvgUnitFromSvg(svg: { getAttribute(name: string): string | null }): number | undefined {
   const width = (svg.getAttribute("width") ?? "").trim();
@@ -252,6 +258,19 @@ function truncate(aabb: [Vec2, Vec2], seg: [Vec2, Vec2]): [Vec2, Vec2] | null {
 /**
  * Given a polyline, returns a list of polylines that form a subset of the
  * input polyline that is completely within aabb.
+ *
+ * 裁剪语义（重要）：这是**逐线段**裁剪，不是按路径整体取舍——
+ * - 框内的节点与线段**全部保留**，仅在折线穿越边框处求交拆分；
+ * - 一条输入折线可能被拆分成 **0 条、1 条或多条**输出碎片（穿过边框
+ *   进出一次就多一条），因此「输出碎片下标」与「输入路径下标」不再
+ *   一一对应；
+ * - 拆分处会插入边框上的交点作为碎片端点，保证落笔路径精确止于边距框。
+ *
+ * ⚠️ 调用方契约：碎片必须继承其来源路径的元数据（stroke/fill/图层归属
+ * 等）。massager.ts 通过随路径携带的 origIndices 原始索引满足此契约；
+ * 历史上曾按碎片新下标直接回查原始路径数组，导致单路径文件（一个超长
+ * <path>）拆分数百碎片后下标越界崩溃、多路径文件错用他路径图层归属
+ * 整批误删。回归测试：__tests__/crop-layer-filter.test.ts。
  */
 function cropLineToAabb(pointList: Vec2[], aabb: [Vec2, Vec2]): Vec2[][] {
   const truncatedPointLists: Vec2[][] = [];
@@ -279,6 +298,12 @@ function cropLineToAabb(pointList: Vec2[], aabb: [Vec2, Vec2]): Vec2[][] {
 
 /**
  * Crops a drawing so it is kept entirely within the given margin.
+ *
+ * 仅在 scaleMode !== "fit"（原尺寸/自定义缩放）路径下由 massager 调用：
+ * fit 模式下图形必然落在边距框内，无需裁剪。输出碎片数量可能多于输入
+ * 路径数（见 cropLineToAabb 说明——一条折线穿越边框几次就拆成几段），
+ * 调用方必须同步维护「碎片 → 原始路径」的索引映射，供后续图层过滤与
+ * 隐藏线去除按原始路径取 stroke/fill 归属。
  */
 export function cropToMargins(pointLists: Vec2[][], paperSize: PaperSize, marginMm: number): Vec2[][] {
   const pageAabb: [Vec2, Vec2] = [{ x: 0, y: 0 }, paperSize.size];
