@@ -152,14 +152,14 @@ describe("Plot Endpoint Test Suite", () => {
       expect(response.text).toContain("超出设备工作范围");
     });
 
-    test("reject plans exceeding the area when fit-page is disabled", async () => {
+    test("reject plans exceeding the area in actual-size scale mode", async () => {
       // 用户流程场景：取消「等比例缩放」后按 1:1 mm 落纸。2100px ≈ 556mm
       // 的路径对齐到 A4 横向纸面后仍超出 430mm 行程
       const BIG_PATH = [[{ x: 0, y: 0 }, { x: 2100, y: 0 }]];
       const planBody = replan(asPaths(BIG_PATH), {
         ...defaultPlanOptions,
         paperSize: PaperSize.standard.A4.landscape,
-        fitPage: false,
+        scaleMode: "actual",
         cropToMargins: false,
         layerMode: "all",
       } as PlanOptions).serialize();

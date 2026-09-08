@@ -22,7 +22,7 @@ There's a third operation mode, which is sending individual instructions to the 
   - `reducer` manages state and handles the UI interaction flow - i.e. disabling/enabling controls when plotting.
 - [`src/drivers.ts`](src/drivers.ts) Interface between UI and Axi machine.  `Bit2AtomDriver`, which uses an intermediate server and NodeSerialPort, and `WebSerialDriver`, which uses WebSerial, are both implementations of `BaseDriver`.
 - [`src/planning.ts`](src/planning.ts) Most of the logic of interpreting an SVG-like object and converting it into a `Plan` of machine instructions to execute. It defines attribute interfaces that are used both in the UI and the server.
-- [`src/massager.ts`](src/massager.ts) Some higher-level transformations that can be done like rotating.
+- [`src/massager.ts`](src/massager.ts) Some higher-level transformations that can be done like rotating, rescaling (three scale modes: fit / actual size / custom percent), aligning to margins and cropping to margins. Each path carries the index of its source path (`origIndices`) through all transformations: cropping splits one path into several fragments, and the downstream layer filtering / hidden-line removal must look up the original path by that index (never by the fragment's array position).
 
 ## When dropping an SVG on the Drawing Area
 
@@ -32,7 +32,7 @@ On `ui.tsx`:
 2. It reads the file as a string, and calls the `readSvg` function.
 3. The `readSvg` function parses the text as an DOM object to call the `flatten-svg` library. It converts it into a list of `Line`s.
 4. Each line is converted to `Path` - a list of `Vec2`.
-5. The `setPaths` function assigns the result in `paths`, and makes a groups of strokes by layers.
+5. The `setPaths` function assigns the result in `paths` (together with the SVG-unit→mm scale inferred from the root element's `width`, falling back to the 96dpi default), and makes a groups of strokes by layers.
 6. Then the paths are converted into a `Plan` - parameterized by the `PlanOptions` on the `usePlan` function`.
   a. It spawns a background `Worker` in `background-planner.ts`
   b. It calls `replan` on `massager.ts` to apply higher level tranformations.

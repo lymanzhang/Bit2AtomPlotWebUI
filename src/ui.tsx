@@ -33,7 +33,7 @@ import {
   XYMotion,
 } from "./planning.js";
 import useComponentSize from "./useComponentSize.js";
-import { defaultPlacement, formatDuration, type Placement } from "./util.js";
+import { defaultPlacement, formatDuration, mmPerSvgUnitFromSvg, type Placement } from "./util.js";
 
 import "./style.css";
 import bit2atomLogo from "./bit2atomLogo.svg";
@@ -90,6 +90,11 @@ const initialState = {
 const persistedPlanOptions = JSON.parse(window.localStorage.getItem("planOptions") ?? "{}");
 initialState.planOptions = { ...initialState.planOptions, ...persistedPlanOptions };
 initialState.planOptions.paperSize = new PaperSize(initialState.planOptions.paperSize.size);
+// 迁移旧版持久化数据：旧 fitPage 布尔值 → scaleMode 三态
+if (persistedPlanOptions.scaleMode == null && persistedPlanOptions.fitPage === false) {
+  initialState.planOptions.scaleMode = "actual";
+}
+delete (initialState.planOptions as Partial<PlanOptions> & { fitPage?: boolean }).fitPage;
 
 type State = typeof initialState;
 
@@ -103,6 +108,8 @@ type Action =
   | { type: "SET_SIMULATING"; value: boolean }
   | { type: "SET_CONNECTED"; connected: boolean }
   | { type: "SET_REWIND_RANGE"; value: State["rewindRange"] }
+  | { type: "SET_REDRAWN_RANGES"; value: State["redrawnRanges"] }
+  | { type: "SET_REDRAW_MODE"; value: State["redrawMode"] }
   | {
       type: "SET_PATHS";
       paths: State["paths"];
@@ -111,6 +118,9 @@ type Action =
       groupLayers: State["groupLayers"];
       selectedGroupLayers: State["planOptions"]["selectedGroupLayers"];
       layerMode: State["planOptions"]["layerMode"];
+      /** 本次加载的 SVG 推算出的用户单位→mm 换算系数（无绝对单位时为
+       * undefined，规划时回退 96dpi 缺省值）。每次加载文件都会整体替换。 */
+      mmPerSvgUnit?: number;
     }
   | { type: "CLEAR_PATHS" };
 
@@ -135,13 +145,13 @@ function reducer(state: State, action: Action): State {
     case "SET_PAUSED":
       return { ...state, paused: action.value };
     case "SET_PATHS": {
-      const { paths, strokeLayers, selectedStrokeLayers, groupLayers, selectedGroupLayers, layerMode } = action;
+      const { paths, strokeLayers, selectedStrokeLayers, groupLayers, selectedGroupLayers, layerMode, mmPerSvgUnit } = action;
       return {
         ...state,
         paths,
         groupLayers,
         strokeLayers,
-        planOptions: { ...state.planOptions, selectedStrokeLayers, selectedGroupLayers, layerMode },
+        planOptions: { ...state.planOptions, selectedStrokeLayers, selectedGroupLayers, layerMode, mmPerSvgUnit },
       };
     }
     case "CLEAR_PATHS":
@@ -257,7 +267,7 @@ const usePlan = (paths: Path[] | null, planOptions: PlanOptions) => {
   return { isPlanning, plan: latestPlan, setPlan };
 };
 
-const setPaths = (paths: Path[]): Action => {
+const setPaths = (paths: Path[], mmPerSvgUnit?: number): Action => {
   const strokes = new Set<string>();
   const groups = new Set<string>();
   for (const path of paths) {
@@ -275,6 +285,7 @@ const setPaths = (paths: Path[]): Action => {
     selectedGroupLayers: new Set(groupLayers),
     selectedStrokeLayers: new Set(strokeLayers),
     layerMode,
+    mmPerSvgUnit,
   };
 };
 
@@ -296,6 +307,13 @@ function DriveParams({ state }: { state: State }) {
   const dp = state.planOptions.driveParams;
   const set = (partial: Partial<typeof dp>) =>
     dispatch({ type: "SET_PLAN_OPTION", value: { driveParams: { ...dp, ...partial } } });
+  const setWorkingArea = (axis: "x" | "y", raw: string) => {
+    const v = Number(raw);
+    const base = { ...dp.workingAreaMm, x: dp.workingAreaMm?.x ?? 0, y: dp.workingAreaMm?.y ?? 0 };
+    base[axis] = v;
+    // 任一维度为空/非正时视为未配置，清空整个工作区（服务端仅告警）
+    set({ workingAreaMm: base.x > 0 && base.y > 0 ? { x: base.x, y: base.y } : undefined });
+  };
   const stepsPerMm = computeStepsPerMm(dp);
   const microstepsPerMm = computeMicrostepsPerMm(dp);
   return (
@@ -663,7 +681,8 @@ function PaperConfig({ state }: { state: State }) {
         {Object.keys(PaperSize.standard).map((name) => (
           <option key={name}>{name}</option>
         ))}
-        <option>自定义</option>
+        {/* 值与 paperSizeName 兜底返回的 "Custom" 一致，确保自定义纸张时正确回显 */}
+        <option value="Custom">自定义</option>
       </select>
       <div className="paper-sizes">
         <label className="paper-label">
@@ -1771,6 +1790,71 @@ function PlacementConfig({ state }: { state: State }) {
   );
 }
 
+/** 缩放模式：等比缩放到纸张绘图区域（默认）/ 按原尺寸 1:1 绘制 / 自定义缩放比例。
+ * 非 fit 模式下可配合「裁剪至边距」移除超出纸张绘图区域的部分。 */
+function ScaleModeConfig({ state }: { state: State }) {
+  const dispatch = useContext(DispatchContext);
+  const { scaleMode, scalePercent, cropToMargins } = state.planOptions;
+  const set = (value: Partial<PlanOptions>) => dispatch({ type: "SET_PLAN_OPTION", value });
+  return (
+    <div
+      className="scale-mode-config"
+      title="非「等比缩放到纸张」模式下，超出纸张绘图区域的部分可用「裁剪至边距」移除"
+    >
+      <label className="flex-checkbox">
+        <input
+          type="radio"
+          name="scaleMode"
+          checked={scaleMode === "fit"}
+          onChange={() => set({ scaleMode: "fit" })}
+        />
+        等比缩放到纸张
+      </label>
+      <label className="flex-checkbox">
+        <input
+          type="radio"
+          name="scaleMode"
+          checked={scaleMode === "actual"}
+          onChange={() => set({ scaleMode: "actual" })}
+        />
+        按原尺寸绘制 (1:1)
+      </label>
+      <label className="flex-checkbox">
+        <input
+          type="radio"
+          name="scaleMode"
+          checked={scaleMode === "custom"}
+          onChange={() => set({ scaleMode: "custom" })}
+        />
+        自定义缩放比例 (%)
+      </label>
+      {scaleMode === "custom" && (
+        <label className="horizontal-labels" title="缩放比例，100 = 原尺寸">
+          <span className="horizontal-labels__title">缩放比例</span>
+          <input
+            type="number"
+            value={scalePercent}
+            min="1"
+            max="1000"
+            step="1"
+            onChange={(e) => set({ scalePercent: Number(e.target.value) })}
+          />
+        </label>
+      )}
+      {scaleMode !== "fit" && (
+        <label className="flex-checkbox" title="移除超出边距的线条">
+          <input
+            type="checkbox"
+            checked={cropToMargins}
+            onChange={(e) => set({ cropToMargins: !!e.target.checked })}
+          />
+          裁剪至边距
+        </label>
+      )}
+    </div>
+  );
+}
+
 function PlanConfig({ state }: { state: State }) {
   const dispatch = useContext(DispatchContext);
   return (
@@ -1794,24 +1878,6 @@ function PlanConfig({ state }: { state: State }) {
           />
           按组分图层
         </label>
-        <label className="flex-checkbox" title="缩放并定位图像以适配页面">
-          <input
-            type="checkbox"
-            checked={state.planOptions.fitPage}
-            onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { fitPage: !!e.target.checked } })}
-          />
-          适配页面
-        </label>
-        {!state.planOptions.fitPage ? (
-          <label className="flex-checkbox" title="移除超出边距的线条">
-            <input
-              type="checkbox"
-              checked={state.planOptions.cropToMargins}
-              onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { cropToMargins: !!e.target.checked } })}
-            />
-            裁剪至边距
-          </label>
-        ) : null}
         <label className="flex-checkbox">
           <input
             type="checkbox"
@@ -2094,7 +2160,13 @@ function Root() {
 
       const reader = new FileReader();
       reader.onload = () => {
-        dispatch(setPaths(readSvg(reader.result as string)));
+        try {
+          const { paths, mmPerSvgUnit } = readSvg(reader.result as string);
+          dispatch(setPaths(paths, mmPerSvgUnit));
+        } catch (e) {
+          // 解析/规划失败必须复位加载状态，否则预览会永久停留在「加载文件中...」
+          console.error("Failed to read SVG:", e);
+        }
         setIsLoadingFile(false);
       };
       reader.onerror = () => {
@@ -2152,7 +2224,8 @@ function Root() {
     };
     const onpaste = (e: ClipboardEvent) => {
       e.clipboardData?.items[0].getAsString((s) => {
-        dispatch(setPaths(readSvg(s)));
+        const { paths, mmPerSvgUnit } = readSvg(s);
+        dispatch(setPaths(paths, mmPerSvgUnit));
       });
     };
     document.body.addEventListener("drop", ondrop);
@@ -2217,6 +2290,7 @@ function Root() {
           <div className="section-header">排版设置</div>
           <div className="section-body">
             <PlacementConfig state={state} />
+            <ScaleModeConfig state={state} />
           </div>
           <details>
             <summary className="section-header">更多设置</summary>
@@ -2312,9 +2386,10 @@ createRoot(document.getElementById("app")!).render(<Root />);
 /**
  * Read an SVG string and transform it to a list of Path.
  * @param svgString Raw SVG String
- * @returns A list of obj
+ * @returns The flattened paths, plus the SVG-unit→mm scale inferred from the
+ * root element's width (undefined → fall back to the 96dpi default).
  */
-function readSvg(svgString: string): Path[] {
+function readSvg(svgString: string): { paths: Path[]; mmPerSvgUnit: number | undefined } {
   const parser = new DOMParser();
   const doc = parser.parseFromString(svgString, "image/svg+xml");
   const svg = doc.querySelector("svg");
@@ -2377,7 +2452,10 @@ function readSvg(svgString: string): Path[] {
       pathIdx++;
     }
   }
-  return paths;
+  // 导入时推算用户单位→mm 的换算系数（width 带绝对物理单位或 px 数与
+  // viewBox 不一致时非 96dpi，按 width_mm ÷ viewBox 宽还原真实尺寸；
+  // width="100%"/缺失时为 undefined，规划时回退 96dpi 缺省值）
+  return { paths, mmPerSvgUnit: mmPerSvgUnitFromSvg(svg) };
 }
 
 // --- Full SVG transform support --------------------------------------------

@@ -57,6 +57,11 @@ export abstract class BaseDriver {
    * driveParams 只有前端知道，故随请求头传给服务端。
    */
   public plotStepsPerMm: number | null = null;
+  /**
+   * custom 硬件的安全工作区域（mm，自原点 0,0 起）。发起绘制请求时通过
+   * X-Plot-Working-Area 头传给服务端，参与绘制前超界校验；内置硬件为 null。
+   */
+  public plotWorkingAreaMm: { x: number; y: number } | null = null;
 
   abstract plot(plan: Plan): void;
   abstract cancel(): void;

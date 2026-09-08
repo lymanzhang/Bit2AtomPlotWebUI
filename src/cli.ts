@@ -12,7 +12,7 @@ import { replan } from "./massager.js";
 import { PaperSize } from "./paper-size.js";
 import { defaultPlanOptions, getDevice, type PlanOptions } from "./planning.js";
 import { connectEBB, startServer } from "./server.js";
-import { formatDuration } from "./util.js";
+import { formatDuration, mmPerSvgUnitFromSvg } from "./util.js";
 
 function parseSvg(svg: string) {
   const window = new Window();
@@ -133,6 +133,12 @@ export function cli(argv: string[]): void {
             type: "boolean",
             default: true,
           })
+          .option("scale-percent", {
+            describe:
+              "Custom scale percentage (used when fit-page is disabled and scale differs from 100, e.g. 50 = half size)",
+            type: "number",
+            default: 100,
+          })
           .option("crop-to-margins", {
             describe: "Remove lines that fall outside the margins",
             type: "boolean",
@@ -201,10 +207,16 @@ export function cli(argv: string[]): void {
           penLiftDuration: args["pen-lift-duration"],
 
           sortPaths: args["sort-paths"],
-          fitPage: args["fit-page"],
+          // fit-page 开启 → 等比缩放到纸张；关闭后 scale-percent ≠ 100 走自定义缩放，否则 1:1 原尺寸
+          scaleMode:
+            args["scale-percent"] !== 100 ? "custom" : args["fit-page"] ? "fit" : "actual",
+          scalePercent: args["scale-percent"],
           cropToMargins: args["crop-to-margins"],
           rotateDrawing: args["rotate-drawing"],
           placement: defaultPlanOptions.placement,
+          // width 带绝对物理单位（或 px 数与 viewBox 不一致）时按其还原真实
+          // 尺寸；width="100%"/缺失时 undefined → 回退 96dpi 缺省
+          mmPerSvgUnit: mmPerSvgUnitFromSvg(parsed),
 
           minimumPathLength: args["minimum-path-length"],
           pathJoinRadius: args["path-join-radius"],

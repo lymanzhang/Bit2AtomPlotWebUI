@@ -61,7 +61,17 @@ export interface PlanOptions {
 
   sortPaths: boolean;
   rotateDrawing: number;
-  fitPage: boolean;
+  /** 缩放模式：fit=等比缩放到纸张绘图区域（默认）；actual=按原尺寸 (1:1)
+   * 绘制；custom=按 scalePercent 自定义比例缩放。非 fit 模式下可配合
+   * cropToMargins 裁掉超出纸张绘图区域的部分。 */
+  scaleMode: "fit" | "actual" | "custom";
+  /** 自定义缩放比例（%），scaleMode === "custom" 时生效 */
+  scalePercent: number;
+  /** 每个 SVG 用户单位对应的毫米数。导入时若 SVG 根元素 width 带绝对物理
+   * 单位（或 px 数与 viewBox 不一致）则按 width_mm ÷ viewBox 宽自动推算，
+   * 未提供时按 96dpi 缺省（1px = 25.4/96 mm）。见 util.ts
+   * mmPerSvgUnitFromSvg()。 */
+  mmPerSvgUnit?: number;
   cropToMargins: boolean;
   placement: Placement;
 
@@ -95,7 +105,8 @@ export const defaultPlanOptions: PlanOptions = {
 
   sortPaths: true,
   rotateDrawing: 0,
-  fitPage: true,
+  scaleMode: "fit",
+  scalePercent: 100,
   cropToMargins: true,
   placement: defaultPlacement,
 

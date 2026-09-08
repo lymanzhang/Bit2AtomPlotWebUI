@@ -1,6 +1,58 @@
 import type { PaperSize } from "./paper-size.js";
 import { type Vec2, vadd, vlen2, vmul, vsub } from "./vec.js";
 
+// CSS, and thus SVG, defines 1px = 1/96th of 1in
+// https://www.w3.org/TR/css-values-4/#absolute-lengths
+const svgUnitsPerInch = 96;
+const mmPerInch = 25.4;
+/** 默认的「每个 SVG 用户单位对应多少毫米」（96dpi 基准） */
+export const defaultMmPerSvgUnit = mmPerInch / svgUnitsPerInch;
+
+/** CSS 绝对长度单位 → mm 换算表（px 按 96dpi 基准；无单位数字按 px 处理） */
+const svgUnitToMm: Record<string, number> = {
+  "": mmPerInch / svgUnitsPerInch,
+  px: mmPerInch / svgUnitsPerInch,
+  pt: mmPerInch / 72,
+  pc: mmPerInch / 6,
+  mm: 1,
+  cm: 10,
+  in: mmPerInch,
+  q: mmPerInch / 40,
+};
+
+/**
+ * 从 SVG 根元素的 width 属性推断「每个用户单位对应多少毫米」。
+ *
+ * 背景：SVG/CSS 规定用户单位（px）固定为 1/96 英寸，与导出 DPI 无关。
+ * Affinity 等软件按「导出 DPI」把物理尺寸折算成 px 数值写入 width 与
+ * viewBox，只有 96dpi 导出时 1 单位才恰好对应 1/96in；非 96dpi 导出的
+ * 同一物理尺寸会被写成更多/更少的单位。但当 width 带绝对物理单位
+ * （如 width="210mm"），或 px 数值与 viewBox 不一致（如 2x 导出
+ * width="1588px" + viewBox 宽 794）时，可按
+ * mmPerUnit = width_mm ÷ viewBox宽度 推断出真实尺度，供「按原尺寸 /
+ * 自定义缩放」模式正确还原物理尺寸。
+ *
+ * width 缺失、为百分比（如 "100%"，物理尺寸信息已丢失）或数值非法时
+ * 返回 undefined，调用方应回退到 96dpi 缺省值（defaultMmPerSvgUnit）。
+ */
+export function mmPerSvgUnitFromSvg(svg: { getAttribute(name: string): string | null }): number | undefined {
+  const width = (svg.getAttribute("width") ?? "").trim();
+  const viewBox = svg.getAttribute("viewBox") ?? "";
+  // viewBox 格式为 "minX minY width height"（正常 4 个分量）；宽度取第 3 个
+  const vb = viewBox.split(/[\s,]+/).filter(Boolean).map(Number);
+  const vbW = vb.length === 4 ? vb[2] : vb[0];
+  const m = /^(\d+(?:\.\d+)?(?:e[+-]?\d+)?)\s*(px|pt|pc|mm|cm|in|q)?$/i.exec(width);
+  if (!m || !(vbW > 0)) {
+    return undefined;
+  }
+  const factor = svgUnitToMm[(m[2] ?? "").toLowerCase()];
+  if (factor == null) {
+    return undefined;
+  }
+  const mmPerUnit = (Number(m[1]) * factor) / vbW;
+  return mmPerUnit > 0 ? mmPerUnit : undefined;
+}
+
 /** Format a smallish duration in 2h30m15s form */
 export function formatDuration(seconds: number): string {
   const hours = Math.floor(seconds / 60 / 60);
