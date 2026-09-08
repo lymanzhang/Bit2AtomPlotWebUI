@@ -355,6 +355,28 @@ function DriveParams({ state }: { state: State }) {
           />
         </label>
       </div>
+      <div className="flex">
+        <label title="安全工作区域宽度，自原点 0,0 起。用于绘制前超界校验与预览标红，防止撞轴">
+          工作区宽 (mm)
+          <input
+            type="number"
+            value={dp.workingAreaMm?.x ?? ""}
+            step="1"
+            min="1"
+            onChange={(e) => setWorkingArea("x", e.target.value)}
+          />
+        </label>
+        <label title="安全工作区域高度，自原点 0,0 起。用于绘制前超界校验与预览标红，防止撞轴">
+          工作区高 (mm)
+          <input
+            type="number"
+            value={dp.workingAreaMm?.y ?? ""}
+            step="1"
+            min="1"
+            onChange={(e) => setWorkingArea("y", e.target.value)}
+          />
+        </label>
+      </div>
       <div className="drive-params-result">
         <div className="duration">
           <div>stepsPerMm</div>
@@ -1328,6 +1350,8 @@ function PlotButtons({
     driver.plotStepsPerMm = isBuiltinHardware(state.planOptions.hardware)
       ? getDevice(state.planOptions.hardware).stepsPerMm
       : computeStepsPerMm(state.planOptions.driveParams);
+    // custom 硬件的安全工作区域随请求头传给服务端做超界校验
+    driver.plotWorkingAreaMm = state.planOptions.driveParams.workingAreaMm ?? null;
     dispatch({ type: "SET_REWIND_RANGE", value: null });
     dispatch({ type: "SET_REDRAWN_RANGES", value: [] });
     dispatch({ type: "SET_REDRAW_MODE", value: false });

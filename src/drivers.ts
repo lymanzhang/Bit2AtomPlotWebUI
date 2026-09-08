@@ -610,6 +610,9 @@ export class Bit2AtomDriver extends BaseDriver {
     if (this.plotStepsPerMm != null) {
       headers["X-Plot-Steps-Per-Mm"] = String(this.plotStepsPerMm);
     }
+    if (this.plotWorkingAreaMm != null) {
+      headers["X-Plot-Working-Area"] = `${this.plotWorkingAreaMm.x}x${this.plotWorkingAreaMm.y}`;
+    }
     return headers;
   }
 

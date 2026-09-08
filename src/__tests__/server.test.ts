@@ -1,7 +1,12 @@
+import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import WebSocket from "ws";
+import { defaultPlanOptions, type PlanOptions } from "../planning";
 import { AxidrawFast, plan } from "../planning";
+import { replan } from "../massager";
+import { PaperSize } from "../paper-size";
 import { createMockSerialPort, mockSerialPortInstance } from "./mocks/serialport";
 
 // Mock SerialPortSerialPort using shared implementation
@@ -38,6 +43,11 @@ const COMPLEX_PATHS = [
 // Pre-serialized plan constants
 const SIMPLE_PLAN = plan(SIMPLE_PATHS, AxidrawFast).serialize();
 const COMPLEX_PLAN = plan(COMPLEX_PATHS, AxidrawFast).serialize();
+
+// replan 的输入是 flatten-svg 的 Path 对象；测试用最小构造包装裸坐标
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const asPaths = (pointLists: { x: number; y: number }[][]): any[] =>
+  pointLists.map((points) => ({ points, stroke: "black", fill: null, fillRule: "nonzero", groupOrder: 0 }));
 
 // Helper function to wait for plotting to complete
 async function waitForPlottingComplete(server: Server, timeout = 10000): Promise<void> {
@@ -128,6 +138,85 @@ describe("Plot Endpoint Test Suite", () => {
       // 行程内的计划不受影响
       await request(server).post("/plot").send(SIMPLE_PLAN).expect(200);
       await waitForPlottingComplete(server);
+    });
+
+    test("reject plans from oversized custom paper via the fit-page flow", async () => {
+      // 用户流程场景：自定义纸张 600×400mm 超出 v3 行程（430×300），
+      // 「等比例缩放」会把图形缩放到纸张大小，计划坐标随之越界
+      const planBody = replan(asPaths(COMPLEX_PATHS), {
+        ...defaultPlanOptions,
+        paperSize: new PaperSize({ x: 600, y: 400 }),
+        layerMode: "all",
+      } as PlanOptions).serialize();
+      const response = await request(server).post("/plot").send(planBody).expect(400);
+      expect(response.text).toContain("超出设备工作范围");
+    });
+
+    test("reject plans exceeding the area when fit-page is disabled", async () => {
+      // 用户流程场景：取消「等比例缩放」后按 1:1 mm 落纸。2100px ≈ 556mm
+      // 的路径对齐到 A4 横向纸面后仍超出 430mm 行程
+      const BIG_PATH = [[{ x: 0, y: 0 }, { x: 2100, y: 0 }]];
+      const planBody = replan(asPaths(BIG_PATH), {
+        ...defaultPlanOptions,
+        paperSize: PaperSize.standard.A4.landscape,
+        fitPage: false,
+        cropToMargins: false,
+        layerMode: "all",
+      } as PlanOptions).serialize();
+      const response = await request(server).post("/plot").send(planBody).expect(400);
+      expect(response.text).toContain("超出设备工作范围");
+    });
+
+    test("accept normal in-range tasks (A4 landscape, fit-page)", async () => {
+      // 正常范围任务：A4 横向 + 等比例缩放，坐标始终在 430×300mm 内
+      const planBody = replan(asPaths(COMPLEX_PATHS), {
+        ...defaultPlanOptions,
+        paperSize: PaperSize.standard.A4.landscape,
+        layerMode: "all",
+      } as PlanOptions).serialize();
+      await request(server).post("/plot").send(planBody).expect(200);
+      await waitForPlottingComplete(server);
+    });
+
+    test("custom hardware hard-rejects only when working area is configured", async () => {
+      // 服务端以 EBB 设备档案（非计划字段）判定硬件类型，先经 WebSocket
+      // 切换到 custom 硬件，测完切回 v3，避免影响其他用例
+      const changeHardware = (hardware: string) =>
+        new Promise<void>((resolve, reject) => {
+          const port = (server.address() as AddressInfo).port;
+          const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+          ws.on("open", () => {
+            ws.send(JSON.stringify({ c: "changeHardware", p: { hardware } }));
+            ws.close();
+            resolve();
+          });
+          ws.on("error", reject);
+        });
+      // custom 硬件的真实行程只有前端知道：未配置工作区域时仅告警放行，
+      // 配置后（X-Plot-Working-Area 头）按真实区域硬拒绝
+      const planBody = replan(asPaths(COMPLEX_PATHS), {
+        ...defaultPlanOptions,
+        paperSize: new PaperSize({ x: 600, y: 400 }),
+        layerMode: "all",
+      } as PlanOptions).serialize();
+      await changeHardware("my-machine");
+      try {
+        // 未配置 → 仅告警，不拒绝
+        await request(server).post("/plot").send(planBody).expect(200);
+        await waitForPlottingComplete(server);
+        // 配置 500×350mm → 计划 Y 方向最大 380mm 超出上限，硬拒绝
+        const rejected = await request(server)
+          .post("/plot")
+          .set("X-Plot-Working-Area", "500x350")
+          .send(planBody)
+          .expect(400);
+        expect(rejected.text).toContain("350.0 mm");
+        // 非法头 → 忽略，仍告警放行
+        await request(server).post("/plot").set("X-Plot-Working-Area", "abc").send(planBody).expect(200);
+        await waitForPlottingComplete(server);
+      } finally {
+        await changeHardware("v3");
+      }
     });
   });
 

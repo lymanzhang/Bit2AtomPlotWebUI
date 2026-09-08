@@ -119,6 +119,21 @@ export async function startServer(
     return null;
   }
 
+  /** 从请求头解析自定义硬件的安全工作区域（X-Plot-Working-Area，格式
+   * "宽x高" mm，如 "500x400"），缺失或非法时返回 null。 */
+  function parseWorkingArea(req: Request): { x: number; y: number } | null {
+    const header = req.headers["x-plot-working-area"];
+    if (typeof header === "string") {
+      const m = header.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/);
+      if (m) {
+        const x = Number(m[1]);
+        const y = Number(m[2]);
+        if (x > 0 && y > 0) return { x, y };
+      }
+    }
+    return null;
+  }
+
   /** 扫描计划坐标范围（全步进空间，含落笔路径、抬笔空程与首尾行程），
    * 超出设备工作范围时返回给用户的描述信息，未超界返回 null。
    * 容差 0.5 步吸收浮点误差。 */
@@ -295,16 +310,23 @@ export async function startServer(
       const headerSpm = parseStepsPerMm(req);
       plotStepsPerMm = headerSpm ?? getDevice(ebb?.hardware ?? hardware).stepsPerMm;
       // 工作范围校验：超出设备行程即拒绝任务（任务不启动、日志不创建），
-      // 防止撞轴。custom 硬件档案非真实机型，仅告警不拒绝。
+      // 防止撞轴。custom 硬件的真实行程只有前端知道（硬件设置中的安全
+      // 工作区域，经请求头传入）；未配置时回退 Axidraw 档案仅告警。
       const hardwareId = ebb?.hardware ?? hardware;
-      const outOfBounds = planOutOfBounds(plan, getDevice(hardwareId), plotStepsPerMm);
+      const customArea = isBuiltinHardware(hardwareId) ? null : parseWorkingArea(req);
+      const areaDevice =
+        customArea != null ? { ...getDevice(hardwareId), workingAreaMm: customArea } : getDevice(hardwareId);
+      const outOfBounds = planOutOfBounds(plan, areaDevice, plotStepsPerMm);
       if (outOfBounds != null) {
-        if (isBuiltinHardware(hardwareId)) {
+        if (customArea != null || isBuiltinHardware(hardwareId)) {
           console.error(`拒绝绘制任务：${outOfBounds}`);
           res.status(400).send(outOfBounds);
           return;
         }
-        console.warn(`custom 硬件按 Axidraw 档案校验超界（仅告警不拒绝）：${outOfBounds}`);
+        console.warn(
+          `custom 硬件未配置安全工作区域，按 Axidraw 档案校验超界（仅告警不拒绝）：${outOfBounds}` +
+            `。请在硬件设置中填写工作区宽高后重试。`,
+        );
       }
       plotLogger = createPlotLogger(req, plan, "plot", plotStepsPerMm);
       if (headerSpm == null) {

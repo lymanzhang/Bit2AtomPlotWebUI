@@ -11,6 +11,9 @@ export interface DriveParams {
   microstepping: number; // 驱动细分，典型值 16
   pulleyTeeth: number; // 同步轮齿数，典型值 20
   beltPitch: number; // 同步带齿距 (mm)，典型值 2
+  /** 自定义硬件的安全工作区域（自原点 0,0 起，mm）。用于绘制前的超界
+   * 校验与预览标红；未配置时服务端仅按 Axidraw 档案告警、前端不标红。 */
+  workingAreaMm?: { x: number; y: number };
 }
 
 export interface SavedProfile {
