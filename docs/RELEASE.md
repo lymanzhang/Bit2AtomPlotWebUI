@@ -75,7 +75,8 @@ Remove-Item Env:\GH_TOKEN
 
 - **版本**：0.19.0 → 0.20.0（缩放三态/SVG 尺寸检测/防撞轴收尾 + 裁剪误删与加载卡死修复，升 minor），`node tools/release.mjs --level minor`
 - **流程修正**：release.mjs 只提交 package.json/package-lock.json——功能改动必须先手动提交再跑它，tag 才包含全部内容（本次先提交 acac7c8，再 bump f5543f2）
-- **tag 重指向**：tag 推送前的补充提交（维护注释 6e4418e、README 措辞 a6a26d0）用 `git tag -f v0.20.0` 重锚定，保证 tag 快照为定稿内容
+- **tag 重指向**：tag 推送前的补充提交（维护注释 6e4418e、README 措辞 a6a26d0、更新日志补回 5ff710e）用 `git tag -f v0.20.0` 重锚定，保证 tag 快照为定稿内容
+- **IDE 旧缓冲区覆盖（已两次踩坑）**：IDE 中打开着旧版本文件时，外部工具对其的编辑会被 IDE 缓冲区在保存时整体覆盖——本版先丢了 `ui.tsx` 的 handleFile 解构（导致加载卡死 bug 差点进 tag），后又丢了 README 更新日志 v0.20.0 条目。防范：批量编辑前提醒关闭相关文件的 IDE 标签页；提交前对关键文档 `git grep` 目标标记复核（如 `v0.20.0`、`scaleMode`），不能只看 `git status` 的 M 标记
 - **打包坑**：PowerShell 5.1 管道 `git archive | tar -xf` 会损坏二进制流（报 Damaged tar archive），须 `git archive --output=xxx.tar` 先落盘再解包
 - **包结构**：git archive（tag 跟踪文件 64 个）+ dist/ 预构建产物，共 100 条目、1.38 MB；.NET ZipArchive 打包，0 反斜杠条目
 - **验证**：从 GitHub 克隆 v0.20.0 tag → `npm ci` → `npm run build` → 53 测试通过 → `node cli.mjs --port 9099` 冒烟 HTTP 200
