@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **任务日志记录暂停/恢复/回溯事件与任务尾 FIFO 深度**：`/resume` 现写入任务日志（含回溯目标动作），暂停回溯执行时记录「进度 起点 → 目标（抬笔行程 xx mm）」；任务尾补充记录结束时的 FIFO 深度（任务头记录时设备可能尚未配置，首个任务显示「未配置」属记录时机问题）。源于 cloud03 长任务实测：日志中回溯只能靠进度回跳推断，现显式留痕
+
 ### Fixed
 
 - **模拟模式（无设备）下 `/plot` 必现崩溃**：doPlot 排空超时估计直接调用 `ebb.estimateMotionDurationSec`，模拟模式（未连接设备或连接失败）下 `ebb` 为 null，报 `TypeError: Cannot read properties of undefined (reading 'estimateMotionDurationSec')`。现加空值保护（模拟模式无设备侧积压，估 0 → 60s 排空下限）；新增模拟模式回归测试（v0.19.0 冒烟测试发现，测试套件此前全部走 mock 串口未覆盖该路径）

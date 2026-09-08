@@ -344,7 +344,9 @@ export async function startServer(
     // redraws from that point — useful to re-ink paths missed by a clogged pen.
     if (unpaused) {
       const rewindTo = req.body?.rewindTo;
-      pendingRewind = typeof rewindTo === "number" && Number.isFinite(rewindTo) && rewindTo >= 0 ? rewindTo : null;
+      const validRewind = typeof rewindTo === "number" && Number.isFinite(rewindTo) && rewindTo >= 0;
+      pendingRewind = validRewind ? rewindTo : null;
+      plotLogger?.line("PLOT", validRewind ? `收到恢复请求（回溯至动作 ${rewindTo}）` : "收到恢复请求");
       signalUnpause();
       signalUnpause = unpaused = null;
     }
@@ -418,6 +420,7 @@ export async function startServer(
         status: signal.aborted ? "cancelled" : "success",
         actualDurationSec: (Date.now() - begin) / 1000,
         actualDistanceMm: plottedDistanceMm,
+        fifoDepth: ebb?.fifoDepth ?? -1,
       });
       plotting = false;
       controller = null;

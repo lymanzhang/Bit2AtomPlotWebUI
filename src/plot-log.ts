@@ -47,6 +47,9 @@ export interface PlotLogResult {
   actualDurationSec: number;
   /** 实际绘制距离（mm） */
   actualDistanceMm: number;
+  /** 结束时的 FIFO 深度（-1 表示未知/未配置）。任务头记录时设备可能
+   * 尚未配置（首个任务在 prePlot 之前），故在任务尾补充记录。 */
+  fifoDepth?: number;
 }
 
 type ConsoleKind = "log" | "warn" | "error";
@@ -167,12 +170,14 @@ export class PlotLogger {
     const statusText =
       result.status === "success" ? "成功" : result.status === "cancelled" ? "已取消" : `失败${result.reason != null ? ` — ${result.reason}` : ""}`;
     const end = new Date();
+    const fifoLine = result.fifoDepth != null ? [`FIFO 深度:      ${result.fifoDepth < 0 ? "未配置" : result.fifoDepth}（任务尾）`] : [];
     this.header(
       [
         "-".repeat(64),
         `结束时间:      ${timestampOf(end)}`,
         `实际时长:      ${formatDuration(result.actualDurationSec)}`,
         `实际绘制距离:  ${(result.actualDistanceMm / 1000).toFixed(1)} m`,
+        ...fifoLine,
         `结果:          ${statusText}`,
         "=".repeat(64),
         "",
