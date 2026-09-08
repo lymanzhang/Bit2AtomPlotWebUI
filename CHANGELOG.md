@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **模拟模式（无设备）下 `/plot` 必现崩溃**：doPlot 排空超时估计直接调用 `ebb.estimateMotionDurationSec`，模拟模式（未连接设备或连接失败）下 `ebb` 为 null，报 `TypeError: Cannot read properties of undefined (reading 'estimateMotionDurationSec')`。现加空值保护（模拟模式无设备侧积压，估 0 → 60s 排空下限）；新增模拟模式回归测试（v0.19.0 冒烟测试发现，测试套件此前全部走 mock 串口未覆盖该路径）
+
 ## [0.19.0] - 2026-09-08
 
 > 已发布至 [GitHub Releases](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.19.0)（tag `v0.19.0`，附件 `bit2atombot-0.19.0-src.zip`）。发布流程与注意事项见 [docs/RELEASE.md](docs/RELEASE.md)。

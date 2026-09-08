@@ -706,7 +706,8 @@ export async function startServer(
     // 低估数倍）。
     let estimatedBusySec = 0;
     for (const m of plan.motions) {
-      estimatedBusySec += ebb.estimateMotionDurationSec(m);
+      // 模拟模式（ebb == null，无设备）下无设备侧积压，估 0 → 60s 下限。
+      estimatedBusySec += ebb?.estimateMotionDurationSec(m) ?? 0;
     }
     const drainTimeoutMs = Math.ceil(estimatedBusySec * 1000) + 60_000;
     await plotter.prePlot(firstPenMotion.initialPos);

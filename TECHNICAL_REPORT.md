@@ -226,7 +226,7 @@ Bit2AtomBot 是一款基于 Web 的笔式绘图仪控制系统，支持 AxiDraw 
 ### 4.8 工程化改进
 
 - **品牌化**：`saxi` → `bit2atombot`（包名/CLI 命令/日志前缀/环境变量 `SAXI_*` → `BIT2ATOM_*`），自定义 logo
-- **测试扩充**：vitest 用例从 20 → 40，新增回溯专项（算法单元 + 服务端集成 + 连续回溯场景）、补画归位集成场景、排版锚点（placement）单元与串口写入失败回归用例
+- **测试扩充**：vitest 用例从 20 → 41，新增回溯专项（算法单元 + 服务端集成 + 连续回溯场景）、补画归位集成场景、排版锚点（placement）单元、串口写入失败回归与模拟模式（无设备）回归用例
 - **Lint 零告警**：清理全部 10 项历史遗留（4 处 `parseInt` 缺 radix、4 处失效的 biome-ignore/eslint-disable 注释、useEffect 多余依赖、CSS 降序特异性），biome 检查 30 文件 0 error / 0 warning / 0 info
 - **分发包**：跨平台源码包（install/start 脚本、预构建产物、发布说明），支持 Windows/macOS/Linux
 

@@ -255,7 +255,7 @@ node cli.mjs
 | `npm run build:ui`     | 仅编译前端 UI          |
 | `npm run build`        | 构建服务器 + 前端      |
 | `npm run lint`         | 代码静态检查（biome，当前 0 告警） |
-| `npm test`             | 运行测试套件（vitest，40 个用例） |
+| `npm test`             | 运行测试套件（vitest，41 个用例） |
 
 ### 运行日志与任务日志
 
