@@ -71,6 +71,16 @@ Remove-Item Env:\GH_TOKEN
 
 ## 发布记录
 
+### v0.20.0（2026-09-08）
+
+- **版本**：0.19.0 → 0.20.0（缩放三态/SVG 尺寸检测/防撞轴收尾 + 裁剪误删与加载卡死修复，升 minor），`node tools/release.mjs --level minor`
+- **流程修正**：release.mjs 只提交 package.json/package-lock.json——功能改动必须先手动提交再跑它，tag 才包含全部内容（本次先提交 acac7c8，再 bump f5543f2）
+- **tag 重指向**：tag 推送前的补充提交（维护注释 6e4418e、README 措辞 a6a26d0）用 `git tag -f v0.20.0` 重锚定，保证 tag 快照为定稿内容
+- **打包坑**：PowerShell 5.1 管道 `git archive | tar -xf` 会损坏二进制流（报 Damaged tar archive），须 `git archive --output=xxx.tar` 先落盘再解包
+- **包结构**：git archive（tag 跟踪文件 64 个）+ dist/ 预构建产物，共 100 条目、1.38 MB；.NET ZipArchive 打包，0 反斜杠条目
+- **验证**：从 GitHub 克隆 v0.20.0 tag → `npm ci` → `npm run build` → 53 测试通过 → `node cli.mjs --port 9099` 冒烟 HTTP 200
+- **产物**：tag `v0.20.0`、Release 附件 `bit2atombot-0.20.0-src.zip`，说明渲染与附件验证通过
+
 ### v0.19.0（2026-09-08）
 
 - **版本**：0.18.0 → 0.19.0（新增任务日志/排版设置 + 多项长时绘制可靠性修复，升 minor）
