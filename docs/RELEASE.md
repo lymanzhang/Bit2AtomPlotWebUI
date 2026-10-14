@@ -78,6 +78,7 @@ Remove-Item Env:\GH_TOKEN
 - **包结构**：git archive（tag 跟踪文件）+ dist/ 预构建产物，共 101 条目、1.39 MB（较 v0.20.0 +1 条目：新增 `scripts/dev-server.mjs` 预览脚本与 `npm run dev`）；Python zipfile 打包，0 反斜杠条目
 - **验证**：发布前 lint 无新增警告、53 测试通过；打包后校验 zip 条目正斜杠、CHANGELOG/README/package.json/dist 齐全；`dist/ui/ui.js` 确认注入 `0.21.0` 版本号（版本号须先 bump 再构建，否则界面品牌区显示旧版本）
 - **产物**：tag `v0.21.0`、Release 附件 `bit2atombot-0.21.0-src.zip`，`gh release view` 确认说明与附件（1,456,015 字节）正常
+- **附件刷新（同日）**：README 主界面截图更新为 v0.21.0 新 UI（`3439e42`，在 tag 之后）后，按当前 HEAD 重新打包（102 条目、1,929,104 字节，+1 条目为新截图）并用 `gh release upload --clobber` 覆盖附件，下载包内 README 与线上一致；tag 未动，快照仍为 `7f40540`
 - **凭据**：`GH_TOKEN` 经 node `spawnSync` 的 `input` 选项喂 `git credential fill` 获取（v0.19.0 记录的方案），用完即清
 
 ### v0.20.0（2026-09-08）
