@@ -22,6 +22,7 @@
     "bit2atombot": "cli.mjs"
   },
   "scripts": {
+    "dev": "cross-env IS_WEB=1 node --experimental-modules build.mjs && node scripts/dev-server.mjs",
     "lint": "biome lint src",
     "build": "npm run build:server && npm run build:ui",
     "build:server": "tsc --project tsconfig.server.json",

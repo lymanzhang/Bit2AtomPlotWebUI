@@ -51,6 +51,17 @@ const defaultVisualizationOptions = {
 // 预览最大放大倍数（最小为 1 = 充满绘制区域）
 const MAX_ZOOM = 40;
 
+/** Relative luminance of a #rrggbb color; > 0.5 counts as a light paper. */
+function paperIsLight(hex: string): boolean {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 0xff;
+  const g = (n >> 8) & 0xff;
+  const b = n & 0xff;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.5;
+}
+
 const initialState = {
   connected: true,
 
@@ -713,7 +724,7 @@ function PaperConfig({ state }: { state: State }) {
       <div>
         <label>
           旋转角度 (度)
-          <div className="horizontal-labels">
+          <span className="icon-input">
             <img src={rotateDrawingIcon} alt="rotate drawing (degrees)" />
             <input
               type="number"
@@ -733,7 +744,7 @@ function PaperConfig({ state }: { state: State }) {
               }}
               onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { rotateDrawing: Number(e.target.value) } })}
             />
-          </div>
+          </span>
         </label>
       </div>
       <label>
@@ -757,6 +768,31 @@ function MotorControl({ driver }: { driver: BaseDriver }) {
         关闭电机
       </button>
     </div>
+  );
+}
+
+function PaperColorPicker({
+  theme,
+  paperColor,
+  setPaperColor,
+}: {
+  theme: "light" | "dark";
+  paperColor: string | null;
+  setPaperColor: (c: string | null) => void;
+}) {
+  // 未自定义时显示主题默认纸色（浅色=白纸，深色=#2a2a2a）
+  const effective = paperColor ?? (theme === "light" ? "#ffffff" : "#2a2a2a");
+  return (
+    <label title="仅影响预览显示，不改变绘图内容。笔迹颜色会按纸色明暗自动切换">
+      预览纸色
+      <span className="paper-color-row">
+        <input type="color" value={effective} onChange={(e) => setPaperColor(e.target.value)} />
+        <span className="hex">{paperColor ? paperColor : `默认 ${effective}`}</span>
+        <button type="button" onClick={() => setPaperColor(null)} disabled={!paperColor}>
+          恢复默认
+        </button>
+      </span>
+    </label>
   );
 }
 
@@ -1890,25 +1926,29 @@ function PlanConfig({ state }: { state: State }) {
       <div className="horizontal-labels">
         <label title="合并同一路径中相近的点（去重），单位 mm">
           <span className="horizontal-labels__title">点合并半径 (mm)</span>
-          <img src={pointJoinRadiusIcon} alt="点合并半径 (mm)" />
-          <input
+          <span className="icon-input">
+            <img src={pointJoinRadiusIcon} alt="点合并半径 (mm)" />
+            <input
             type="number"
             value={state.planOptions.pointJoinRadius}
             step="0.1"
             min="0"
             onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { pointJoinRadius: Number(e.target.value) } })}
           />
+          </span>
         </label>
         <label title="合并端点相近的不同路径（减少抬笔），单位 mm">
           <span className="horizontal-labels__title">路径合并半径 (mm)</span>
-          <img src={pathJoinRadiusIcon} alt="路径合并半径 (mm)" />
-          <input
+          <span className="icon-input">
+            <img src={pathJoinRadiusIcon} alt="路径合并半径 (mm)" />
+            <input
             type="number"
             value={state.planOptions.pathJoinRadius}
             step="0.1"
             min="0"
             onChange={(e) => dispatch({ type: "SET_PLAN_OPTION", value: { pathJoinRadius: Number(e.target.value) } })}
           />
+          </span>
         </label>
       </div>
       <div>
@@ -2052,7 +2092,9 @@ function PortSelector({ driver, setDriver, hardware }: PortSelectorProps) {
   }, [driver, hardware]);
   return (
     <>
-      {driver?.connected ? `已连接到 ${driver.name()}` : null}
+      <span className={driver?.connected ? "conn" : "conn bad"}>
+        {driver?.connected ? `已连接到 ${driver.name()}` : "未连接"}
+      </span>
       <button
         type="button"
         disabled={initializing}
@@ -2198,13 +2240,31 @@ function Root() {
     a.click();
     URL.revokeObjectURL(url);
   }, [plan, state.planOptions]);
+  // 浅色/深色主题：浅色配白纸深色笔，深色配深色纸浅色笔；选择持久化。
   const [theme, setTheme] = React.useState<"light" | "dark">(
-    () => (window.localStorage.getItem("bit2atom-theme") as "light" | "dark") || "light",
+    () => (window.localStorage.getItem("bit2atom-theme") as "light" | "dark") || "dark",
   );
   React.useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     window.localStorage.setItem("bit2atom-theme", theme);
   }, [theme]);
+  // 自定义预览纸色：null 表示跟随主题默认（浅色=白纸，深色=#2a2a2a）。
+  // 自定义时按纸色亮度自动选择深色/浅色笔迹组，保证预览可读。
+  const [paperColor, setPaperColor] = React.useState<string | null>(
+    () => window.localStorage.getItem("bit2atom-paper-color"),
+  );
+  React.useEffect(() => {
+    const el = document.documentElement;
+    if (paperColor) {
+      el.style.setProperty("--canvas-bg", paperColor);
+      el.setAttribute("data-paper", paperIsLight(paperColor) ? "light" : "dark");
+      window.localStorage.setItem("bit2atom-paper-color", paperColor);
+    } else {
+      el.style.removeProperty("--canvas-bg");
+      el.setAttribute("data-paper", theme === "light" ? "light" : "dark");
+      window.localStorage.removeItem("bit2atom-paper-color");
+    }
+  }, [paperColor, theme]);
 
   useEffect(() => {
     // Called when the user drags and drops the image
@@ -2253,67 +2313,68 @@ function Root() {
   return (
     <DispatchContext.Provider value={dispatch}>
       <div className={`root ${state.connected ? "connected" : "disconnected"}`}>
-        <div className="control-panel">
-          <div className="bit2atom-title">
+        <aside className="control-panel">
+          <div className="brand">
             <img src={bit2atomLogo} alt="Bit2AtomBot" className="title-logo" />
+            <span>Bit2AtomBot</span>
+            <span className="brand-version">v{APP_VERSION}</span>
           </div>
-          {!IS_WEB && (
-            <div className={state.connected && state.deviceInfo?.path ? "info" : "info-disconnected"}>
-              {state.connected
-                ? state.deviceInfo?.path
-                  ? `已连接到 EBB (${state.deviceInfo.path})`
-                  : "未连接到 EBB"
-                : "未连接"}
-            </div>
-          )}
-          {IS_WEB && (
+          <details open>
+            <summary>当前连接设备</summary>
             <div className="section-body">
-              <PortSelector
-                driver={driver}
-                setDriver={setDriver}
-                hardware={(driver as WebSerialDriver)?.ebb?.hardware ?? (state.planOptions.hardware as Hardware)}
-              />
+              {!IS_WEB && (
+                <span className={state.connected && state.deviceInfo?.path ? "conn" : "conn bad"}>
+                  {state.connected
+                    ? state.deviceInfo?.path
+                      ? `已连接到 EBB (${state.deviceInfo.path})`
+                      : "未连接到 EBB"
+                    : "未连接"}
+                </span>
+              )}
+              {IS_WEB && (
+                <PortSelector
+                  driver={driver}
+                  setDriver={setDriver}
+                  hardware={(driver as WebSerialDriver)?.ebb?.hardware ?? (state.planOptions.hardware as Hardware)}
+                />
+              )}
             </div>
-          )}
-          <div className="section-header">画笔设置</div>
-          <div className="section-body">
-            <PenHeight state={state} driver={driver} />
-            <MotorControl driver={driver} />
-            <HardwareOptions state={state} driver={driver} />
-            <ResetToDefaultsButton />
-          </div>
-          <div className="section-header">纸张设置</div>
-          <div className="section-body">
-            <PaperConfig state={state} />
-            <LayerSelector state={state} />
-          </div>
-          <div className="section-header">排版设置</div>
-          <div className="section-body">
-            <PlacementConfig state={state} />
-            <ScaleModeConfig state={state} />
-          </div>
+          </details>
+          <details open>
+            <summary>画笔设置</summary>
+            <div className="section-body">
+              <PenHeight state={state} driver={driver} />
+              <MotorControl driver={driver} />
+              <HardwareOptions state={state} driver={driver} />
+              <ResetToDefaultsButton />
+            </div>
+          </details>
+          <details open>
+            <summary>纸张设置</summary>
+            <div className="section-body">
+              <PaperConfig state={state} />
+              <LayerSelector state={state} />
+              <PaperColorPicker theme={theme} paperColor={paperColor} setPaperColor={setPaperColor} />
+            </div>
+          </details>
+          <details open>
+            <summary>排版设置</summary>
+            <div className="section-body">
+              <PlacementConfig state={state} />
+              <ScaleModeConfig state={state} />
+            </div>
+          </details>
           <details>
-            <summary className="section-header">更多设置</summary>
+            <summary>更多设置</summary>
             <div className="section-body">
               <PlanConfig state={state} />
               <OriginOptions state={state} />
               <VisualizationOptions state={state} />
-              <div className="section-header" style={{ marginTop: "8px" }}>
-                主题设置
-              </div>
-              <label className="flex-checkbox">
-                <input type="checkbox" checked={theme === "light"} onChange={() => setTheme("light")} />
-                浅色模式
-              </label>
-              <label className="flex-checkbox">
-                <input type="checkbox" checked={theme === "dark"} onChange={() => setTheme("dark")} />
-                暗色模式
-              </label>
             </div>
           </details>
           <div className="spacer" />
-          <div className="control-panel-bottom">
-            <div className="section-header">绘图设置</div>
+          <details open className="control-panel-bottom">
+            <summary>绘图设置</summary>
             <div className="section-body section-body__plot">
               <PlanStatistics plan={plan} planOptions={state.planOptions} />
               <TimeLeft
@@ -2329,9 +2390,25 @@ function Root() {
               )}
               <PlotButtons plan={plan} isPlanning={isPlanning} state={state} driver={driver} />
             </div>
-          </div>
-        </div>
+          </details>
+        </aside>
         <div className="preview-area" ref={previewArea}>
+          <div className="floating-actions">
+            <span className="spacer" />
+            <div className="seg" title="按绘制纸张颜色选择：浅色主题配白纸深色笔，深色主题配深色纸浅色笔">
+              <button type="button" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>
+                浅色
+              </button>
+              <button type="button" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>
+                深色
+              </button>
+            </div>
+            {state.paths && state.paths.length > 0 && (
+              <button type="button" className="clear-svg-btn" onClick={handleClear}>
+                清除 SVG
+              </button>
+            )}
+          </div>
           <PlanPreview
             state={state}
             previewSize={{ width: Math.max(0, previewSize.width - 40), height: Math.max(0, previewSize.height - 40) }}
@@ -2339,11 +2416,6 @@ function Root() {
           />
           <PlanLoader isPlanning={isPlanning} isLoadingFile={isLoadingFile} />
           {showDragTarget && <DragTarget handleFile={handleFile} />}
-          {state.paths && state.paths.length > 0 && (
-            <button type="button" className="clear-svg-btn" onClick={handleClear}>
-              清除 SVG
-            </button>
-          )}
         </div>
       </div>
     </DispatchContext.Provider>

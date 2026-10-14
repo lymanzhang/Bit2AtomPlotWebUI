@@ -1,1862 +1,732 @@
-:root {
-  --teal: #007acc;
-  --teal-light: #e6f2fa;
-  --teal-dark: #005a9e;
-  --purple: #3c3c3c;
-  --purple-light: #e5e5e5;
-  --purple-dark: #1e1e1e;
-  --red: #c97070;
-  --panel-width: 260px;
-  --panel-bg: #ffffff;
-  /* Canvas (preview) colors */
+/* Bit2AtomBot UI — neutral-gray shell, periwinkle lines & accent,
+   collapsible sidebar sections, checkerboard stage, footer stats bar.
+   Two themes: dark (default, for dark paper / light pen) and light
+   (for white paper / dark pen). Toggle via [data-theme] on <html>. */
+
+:root,
+[data-theme="dark"] {
+  --bg: #404040;
+  --panel: #303030;
+  --line: #ababff;
+  --text: #e6e7ea;
+  --dim: #ffffff;
+  --accent: #ababff;
+  --on-accent: #10131a;
+  --accent-soft: #ababff40;
+  --plotting: #8f8fe6;
+  --warn: #e39820;
+  --bad: #e06c75;
+  --pad: 12px;
+
+  --input-bg: #12131a;
+  --btn-bg: #262933;
+  --btn-hover: #30343f;
+  --btn-active: #3a3e4a;
+
+  --stage-a: #191b21;
+  --stage-b: #1d1f26;
+  --overlay: rgba(11, 12, 16, 0.45);
+  --loader-bg: rgba(11, 12, 16, 0.55);
+
+  --scrollbar: #4a4a4a;
+  --scrollbar-hover: #5a5a5a;
+
+  /* Default paper for the dark theme (customizable in 纸张设置) */
+  --canvas-bg: #2a2a2a;
+}
+
+[data-theme="light"] {
+  --bg: #f4f4f6;
+  --panel: #ffffff;
+  --line: #a3a3e6;
+  --text: #26262b;
+  --dim: #5a5a64;
+  --accent: #5f5fd0;
+  --on-accent: #ffffff;
+  --accent-soft: #5f5fd038;
+  --plotting: #7d7de0;
+
+  --input-bg: #ffffff;
+  --btn-bg: #f0f0f4;
+  --btn-hover: #e6e6ee;
+  --btn-active: #dadae6;
+
+  --stage-a: #e9e9ee;
+  --stage-b: #e0e0e7;
+  --overlay: rgba(255, 255, 255, 0.55);
+  --loader-bg: rgba(255, 255, 255, 0.65);
+
+  --scrollbar: #c4c4cc;
+  --scrollbar-hover: #a6a6b2;
+
+  /* Default paper for the light theme */
   --canvas-bg: #ffffff;
+}
+
+/* Stroke sets, driven by paper brightness rather than UI theme, so a custom
+   paper color always gets a legible stroke palette. [data-paper] is set from
+   the theme by default, or from the custom paper color's luminance. */
+[data-paper="dark"] {
+  --canvas-stroke: rgba(255, 255, 255, 0.85);
+  --canvas-stroke-faded: rgba(255, 255, 255, 0.3);
+  --canvas-stroke-done: #6a6a6a;
+  --canvas-stroke-current: #ababff;
+  --canvas-stroke-rewind: #e06c75;
+  --canvas-stroke-rewind-pending: #e39820;
+  --canvas-margin: #9d9d9d;
+  --canvas-grid5: #3a3a3a;
+  --canvas-grid10: #4a4a4a;
+  --canvas-ruler: #6a6a6a;
+  --canvas-ruler-text: #9d9d9d;
+  --canvas-progress: rgba(224, 108, 117, 0.9);
+}
+
+[data-paper="light"] {
   --canvas-stroke: rgba(0, 0, 0, 0.8);
   --canvas-stroke-faded: rgba(0, 0, 0, 0.3);
   --canvas-stroke-done: #b0b0b0;
-  --canvas-stroke-current: #007acc;
-  --canvas-stroke-rewind: #e53935;
+  --canvas-stroke-current: #5b5bd6;
+  --canvas-stroke-rewind: #e06c75;
+  --canvas-stroke-rewind-pending: #e39820;
   --canvas-margin: #000000;
-  --canvas-grid5: #e4e4e4;
-  --canvas-grid10: #cdcdcd;
+  --canvas-grid5: #e6e6ef;
+  --canvas-grid10: #cfcfe0;
   --canvas-ruler: #bbb;
   --canvas-ruler-text: #999;
-  --canvas-progress: rgba(201, 112, 112, 0.9);
+  --canvas-progress: rgba(224, 108, 117, 0.9);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
 }
 
 body {
-  font-family: 'DengXian', '绛夌嚎', 'Microsoft YaHei', sans-serif;
-  font-size: 14px;
-  color: var(--purple);
-  background-color: #f8f8f8;
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
 }
 
-/* Scrollbar — light theme (default) */
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+strong {
+  font-weight: 600;
 }
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #c4c4c4;
+  background: var(--scrollbar);
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: #a0a0a0;
-  background-clip: content-box;
-}
-::-webkit-scrollbar-corner {
-  background: transparent;
-}
-/* Firefox */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: #c4c4c4 transparent;
-}
-
-
-
-
-
-body, html, #app {
-
-
-  height: 100%;
-
-
-  margin: 0;
-
-
-}
-
-
-
-
-
-body.dragover {
-
-
-  background-color: var(--teal-light);
-
-
-}
-
-
-
-
-
-* {
-
-
-  box-sizing: border-box;
-
-
-  -webkit-font-smoothing: antialiased;
-
-
-  -moz-osx-font-smoothing: grayscale;
-
-
-}
-
-
-
-
-
-strong {
-
-
-  font-weight: 900;
-
-
-}
-
-
-
-
-
-.root {
-
-
-  display: flex;
-
-
-  align-items: stretch;
-
-
-  height: 100%;
-
-
-}
-
-
-
-
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
 
 path {
-
-
-  stroke: black;
-
-
+  stroke: var(--canvas-stroke);
   fill: transparent;
-
-
 }
 
+/* ------------------------------------------------------------ shell */
 
-
-
-
-.preview-area {
-
-
-  position: relative;
-
-
-  flex: 1 1 auto;
-
-
+/* v0.20 layout: .root itself is the row container — sidebar + preview sit
+   side by side (there is no <main> wrapper in this codebase's markup). */
+.root {
   display: flex;
-
-
-  justify-content: center;
-
-
-  align-items: center;
-
-
-  overflow: hidden;
-
-
-}
-
-
-
-
-
-.preview {
-
-
-  box-shadow: 3px 3px 15px rgba(0, 0, 0, 0.2);
-
-
-  overflow: hidden;
-
-
-  background-color: var(--canvas-bg);
-
-
-  position: relative;
-
-
-}
-
-
-
-
-
-.preview-loader {
-
-
-  align-items: center;
-
-
-  background: rgba(0, 0, 0, 0.2);
-
-
-  color: whitesmoke;
-
-
-  display: flex;
-
-
-  font-size: 36px;
-
-
-  font-weight: bold;
-
-
   height: 100%;
-
-
-  justify-content: center;
-
-
-  left: 0;
-
-
-  position: absolute;
-
-
-  top: 0;
-
-
-  width: 100%;
-
-
+  background: var(--bg);
 }
 
-
-
-
-
-.preview > svg {
-
-
-  display: block;
-
-
-  contain: strict;
-
-
-}
-
-
-
-
-
-.preview > svg:not(:first-child) {
-
-
-  position: absolute;
-
-
-  transform: translateZ(0.001px);
-
-
-  top: 0;
-
-
-  left: 0;
-
-
-}
-
-
-
-
-
-.drag-target {
-
-
-  position: absolute;
-
-
-  top: 0;
-
-
-  left: 0;
-
-
-  right: 0;
-
-
-  bottom: 0;
-
-
+/* Compact brand line at the top of the sidebar */
+.brand {
   display: flex;
-
-
-  justify-content: center;
-
-
   align-items: center;
-
-
-  background: rgba(0, 0, 0, 0.2);
-
-
+  gap: 8px;
+  margin: 0 2px 12px;
+  font-size: 19.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  user-select: none;
+}
+.brand .title-logo { display: block; height: 27px; width: auto; }
+.disconnected .brand .title-logo { opacity: 0.5; }
+.brand .brand-version {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--dim);
+  opacity: 0.75;
+  letter-spacing: .02em;
 }
 
+/* Connection status text inside the 当前连接设备 section */
+.conn { display: block; font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+.conn.bad { color: var(--bad); }
 
-
-
-
-.dragover .drag-target {
-
-
-  opacity: 0;
-
-
-}
-
-
-
-
-
-.drag-target-message {
-
-
+/* Segmented control (theme switch, floats over the preview's top-right) */
+.seg {
   display: flex;
-
-
-  flex-direction: column;
-
-
-  align-items: center;
-
-
-  color: whitesmoke;
-
-
-  font-weight: bold;
-
-
-  font-size: 36px;
-
-
-  gap: 12px;  /* space between text and button */
-
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.seg button {
+  border: 0;
+  border-radius: 0;
+  padding: 4px 10px;
+  width: auto;
+  margin: 0;
+  background: transparent;
+  font-size: 12px;
+}
+.seg button:not(:disabled):hover { background: var(--btn-hover); }
+.seg button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
 }
 
-
-
-
-
-
-
+/* ------------------------------------------------------------ sidebar */
 
 .control-panel {
-
-
-  position: relative;
-
-
-  flex: 0 0 var(--panel-width);
-
-
-  width: var(--panel-width);
-
-
-  background-color: var(--panel-bg);
-
-
+  width: 340px;
+  flex: 0 0 340px;
+  border-right: 1px solid var(--line);
   overflow-y: auto;
-  padding-bottom: 150px;
-
-
-
-
-
-  box-shadow: 3px 3px 15px rgba(0, 0, 0, 0.2);
-
-
+  padding: var(--pad);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
 }
+/* Flex children must never shrink below their content — when sections
+   overflow, the panel scrolls instead of clipping each box. */
+.control-panel > * { flex: 0 0 auto; }
+/* Pushes the plot panel to the bottom of the sidebar when space allows */
+.control-panel > .spacer { flex: 1 1 auto; }
 
-
-
-
-
-.control-panel-bottom {
-
-
-  position: fixed;
-
-
-  bottom: 0;
-
-
-  width: var(--panel-width);
-
-
-  padding-bottom: 0.5rem;
-
-
-  background-color: var(--panel-bg);
-
-
+/* Collapsible sections */
+details {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 0 0 12px;
+  overflow: hidden;
 }
-
-
-
-
-
-.bit2atom-title {
-
-
-  margin: 0 1rem;
-
-
-  padding-top: 0.5rem;
-
-
-  text-align: center;
-
-
+details > summary {
+  color: var(--dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  outline: none;
   user-select: none;
-
-
 }
-
-
-
-
-
-.title-logo {
-
-
-  display: block;
-
-
-  margin: 0 auto;
-
-
-  max-width: 140px;
-
-
-  height: auto;
-
-
+details > summary::-webkit-details-marker { display: none; }
+details > summary:hover { background: var(--btn-hover); }
+details > summary::after {
+  content: '▸';
+  margin-left: auto;
+  transition: transform .15s;
 }
+details[open] > summary::after { transform: rotate(90deg); }
+.section-body { padding: 0 10px 10px; }
 
-
-
-
-
-.disconnected .bit2atom-title {
-
-
-  opacity: 0.5;
-
-
-}
-
-
-
-
-
-.section-header {
-
-
-  margin-bottom: 1rem;
-
-
-  padding: 0.5rem 0;
-
-
-  border-bottom: 1px solid var(--purple-light);
-
-
-  font-size: 18px;
-
-
-  font-weight: 900;
-
-
-  text-align: center;
-
-
-  user-select: none;
-
-
-}
-
-
-
-
-
-.control-panel-bottom .section-header {
-
-
-  padding-top: 0.25rem;
-
-
-}
-
-
-
-
-
-.section-body {
-
-
-  padding: 0 1rem;
-
-
-}
-
-
-
-
-
-/* INPUTS */
-
-
-
-
-
-form {
-
-
-  display: grid;
-
-
-  grid-template-columns: 1fr 1fr;
-
-
-}
-
-
-
-
+/* ------------------------------------------------------------ inputs */
 
 label {
-
-
-  font-size: 10px;
-
-
-  text-align: center;
-
-
-  line-height: 1.6;
-
-
+  display: block;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.5;
   user-select: none;
-
-
+  margin-bottom: 6px;
 }
 
-
-
-
-
-input[type=number], input[type=text], textarea {
-
-
+input[type=number], input[type=text], textarea, select {
   width: 100%;
-
-
-  padding: 0.3rem;
-
-
-  margin-bottom: 0.5rem;
-
-
-  border: 1px solid var(--purple);
-
-
-  font-family: 'DengXian', '绛夌嚎', 'Microsoft YaHei', sans-serif;
-
-
-  font-size: 14px;
-
-
-  color: var(--purple);
-
-
-  background-color: white;
-
-
-  box-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
-
-
+  margin-top: 2px;
+  padding: 3px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
   outline: none;
-
-
 }
+input[type=number]:hover, input[type=number]:focus,
+input[type=text]:hover, input[type=text]:focus,
+textarea:hover, textarea:focus,
+select:hover, select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+select { height: 26px; padding: 2px 4px; }
 
-
-
-
+input[type=color] {
+  width: 40px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+/* Let the native swatch fill the whole box — no padded mini-rectangle inside */
+input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type=color]::-webkit-color-swatch { border: none; border-radius: 3px; }
+input[type=color]::-moz-color-swatch { border: none; border-radius: 3px; }
+.paper-color-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 2px;
+}
+.paper-color-row button { width: auto; margin-bottom: 0; padding: 3px 10px; font-size: 12px; }
+.paper-color-row .hex {
+  font-size: 11px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
 
 input[type=checkbox] {
-
-
   position: relative;
-
-
   appearance: none;
-
-
   -webkit-appearance: none;
-
-
-  width: 18px;
-
-
-  height: 18px;
-
-
-  margin: 0 0.5rem 0 0;
-
-
-  border: 1px solid var(--purple);
-
-
-  background-color: white;
-
-
-  box-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
-
-
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0 6px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--input-bg);
   outline: none;
-
-
   cursor: pointer;
-
-
+  vertical-align: -2px;
 }
-
-
-
-
-
 input[type=checkbox]:checked:after {
-
-
-  display: block;
-
-
-  position: absolute;
-
-
-  top: 3px;
-
-
-  right: 3px;
-
-
-  bottom: 3px;
-
-
-  left: 3px;
-
-
   content: '';
-
-
-  background-color: var(--purple);
-
-
+  position: absolute;
+  inset: 2px;
+  border-radius: 1px;
+  background: var(--accent);
 }
+input[type=checkbox]:focus { box-shadow: 0 0 0 1px var(--accent-soft); }
 
-
-
-
-
-button, select {
-
-
-  width: 100%;
-
-
-  margin-bottom: 0.5rem;
-
-
-  padding: 0.4rem;
-
-
-  font-family: 'DengXian', '绛夌嚎', 'Microsoft YaHei', sans-serif;
-
-
-  font-size: 14px;
-
-
-  font-weight: 700;
-
-
-  background-color: white;
-
-
-  color: var(--purple);
-
-
-  border: 1px solid var(--purple);
-
-
-  border-radius: 0;
-
-
-  box-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
-
-
-  cursor: pointer;
-
-
-  outline: none;
-
-
-}
-
-
-
-
-
-.drag-target-message button {
-
-
-
-  width: auto;
-
-
-
-  font-size: inherit;
-
-
-
-  font-weight: inherit;
-
-
-
-  padding: 8px 36px;
-
-
-
-  margin: 0;
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-button:not(:disabled):hover,
-button:not(:disabled):focus,
-
-
-select:not(:disabled):hover,
-
-
-select:focus,
-
-
-input[type=number]:hover,
-
-
-input[type=number]:focus,
-
-
-input[type=text]:hover,
-
-
-input[type=text]:focus,
-
-
-textarea:hover,
-
-
-textarea:focus,
-
-
-input[type=checkbox]:focus {
-
-
-  box-shadow: 1px 2px 5px rgba(0, 0, 0, 0.25);
-
-
-}
-
-
-
-
-
-button:not(:disabled):active {
-
-
-  box-shadow: 0px 0px 1px rgba(0, 0, 0, 0.25), inset 2px 2px 5px rgba(0, 0, 0, 0.2);
-
-
-  background-color: #fafafa;
-
-
-  color: var(--purple-dark);
-
-
-}
-
-
-
-
-
-/* button-link is a button element that looks like a link */
-
-
-button.button-link {
-
-
-  display: block;
-
-
-  padding: 0;
-
-
-  border: none;
-
-
-  font-size: 10px;
-
-
-  text-decoration: none;
-
-
-  background-color: transparent;
-
-
-  box-shadow: none;
-
-
-  font-weight: 400;
-
-
-}
-
-
-
-
-
-button.button-link:hover,
-
-
-button.button-link:active,
-
-
-button.button-link:focus {
-
-
-  box-shadow: none;
-
-
-  background-color: transparent;
-
-
-  text-decoration: underline;
-
-
-}
-
-
-
-
-
-select {
-
-
-  height: 30px;
-
-
+input[type=radio] {
+  position: relative;
   appearance: none;
-
-
   -webkit-appearance: none;
-
-
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0 6px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--input-bg);
+  outline: none;
+  cursor: pointer;
+  vertical-align: -2px;
 }
-
-
-
-
+input[type=radio]:checked:after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+input[type=radio]:focus { box-shadow: 0 0 0 1px var(--accent-soft); }
 
 select[multiple]:focus option:checked {
-
-
-  background: var(--purple);
-
-
-  color: white;
-
-
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
+button {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  color: var(--text);
+  background: var(--btn-bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+  outline: none;
+}
+button:not(:disabled):hover { background: var(--btn-hover); }
+button:not(:disabled):active { background: var(--btn-active); }
+button:disabled { opacity: 0.45; cursor: default; }
 
-
-
-
-.flex button,
-
-
-.flex label {
-
-
-  width: calc(50% - 0.25rem);
-
-
-  align-self: flex-end;
-
-
+/* button-link is a button element that looks like a link */
+button.button-link {
+  display: block;
+  width: auto;
+  padding: 0;
+  margin-bottom: 6px;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11px;
+  box-shadow: none;
+}
+button.button-link:hover,
+button.button-link:active,
+button.button-link:focus {
+  background: transparent;
+  text-decoration: underline;
 }
 
-
-
-
-
-.flex-checkbox {
-
-
+.flex {
   display: flex;
-
-
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8px;
+}
+.flex button, .flex label {
+  width: calc(50% - 4px);
+}
+.flex-checkbox {
+  display: flex;
   align-items: center;
-
-
-  margin-bottom: 0.5rem;
-
-
+  margin-bottom: 6px;
 }
 
-
-
-
+form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 10px;
+}
 
 /* PEN section */
-
-
-
-
-
-.pen-label {
-
-
-  width: calc(50% - 0.25rem);
-
-
-}
-
-
-
-
+.pen-label { width: calc(50% - 4px); }
 
 /* PAPER section */
-
-
-
-
-
 .paper-sizes {
-
-
   display: flex;
-
-
   justify-content: space-between;
-
-
   align-items: flex-end;
-
-
+  gap: 6px;
 }
-
-
-
-
-
-.paper-label {
-
-
-  width: 44%;
-
-
-  margin-bottom: 0;
-
-
-}
-
-
-
-
-
+.paper-label { width: 44%; margin-bottom: 0; }
 .paper-sizes__swap {
-
-
   width: 10%;
-
-
-  margin-bottom: 16px;
-
-
+  margin-bottom: 8px;
   cursor: pointer;
-
-
-  fill: var(--purple);
-
-
+  fill: var(--dim);
 }
-
-
-.paper-sizes__swap:hover {
-
-
-  fill: var(--purple-dark);
-
-
-}
-
-
-
-
+.paper-sizes__swap:hover { fill: var(--accent); }
 
 .layer-select {
-
-
   height: 100px;
-
-
-  background-color: white;
-
-
-  border: 1px solid var(--purple);
-
-
-  color: var(--purple);
-
-
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
 }
+.layer-select:hover { cursor: default; }
 
-
-.layer-select:hover {
-
-
-  background-color: white;
-
-
-  cursor: default;
-
-
+/* icon + input combo (rotate / join radii): the icon lives inside the input's
+   own border box, so neither it nor its divider can stick out. */
+.icon-input {
+  display: flex;
+  align-items: stretch;
+  margin-top: 2px;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
 }
-
-
-
-
-
-.spacer {
-
-
-  height: 200px;
-
-
+.icon-input:hover,
+.icon-input:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
 }
-
-
-
-
-
-/* MORE section */
-
-
-
-
-
-summary {
-
-
-  outline: none;
-
-
-  cursor: pointer;
-
-
+.icon-input img {
+  flex: 0 0 auto;
+  width: 20px;
+  padding: 2px 4px;
+  border-right: 1px solid var(--line);
 }
-
-
-
-
-
-summary:focus {
-
-
-  color: var(--purple-dark);
-
-
+.icon-input input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+  border: none;
+  background: transparent;
 }
-
-
-
-
-
-.horizontal-labels label {
-
-
-  display: block;
-
-
-  position: relative;
-
-
+.icon-input input:hover,
+.icon-input input:focus {
+  box-shadow: none;
 }
-
-
-.horizontal-labels label::after {
-
-
-  position: absolute;
-
-
-  top: 0;
-
-
-  bottom: 0;
-
-
-  left: 28px;
-
-
-  border-right: 1px solid var(--purple);
-
-
-}
-
-
-
-
-
-.horizontal-labels img {
-
-
-  position: absolute;
-
-
-  padding: 4px;
-
-
-  width: 28px;
-
-
-  height: 28px;
-
-
-  border-right: 1px solid var(--purple);
-
-
-  /*opacity: 0.5;*/
-
-
-}
-
-
-.horizontal-labels input {
-
-
-  padding-left: 32px;
-
-
-}
-
 .horizontal-labels__title {
   display: block;
   text-align: left;
   margin-bottom: 2px;
 }
 
-
-
-
-
-/* PLOT section */
-
-
-
-
+/* ------------------------------------------------------------ plot section */
 
 .duration {
-
-
   display: flex;
-
-
   justify-content: space-between;
-
-
-  margin-bottom: 0.5rem;
-
-
+  margin-bottom: 4px;
+  font-variant-numeric: tabular-nums;
 }
-
-
-
-
-
-.section-body__plot button {
-
-
-  padding: 0.4rem;
-
-
-  font-size: 18px;
-
-
-}
-
-
-.section-body__plot button:disabled {
-
-
-  /*background-color: var(--purple-light);*/
-
-
-  /*color: var(--purple-light);*/
-
-
-  cursor: default;
-
-
-}
-
-
-
-
 
 .plot-button {
-
-
-  color: white;
-
-
-  background-color: var(--teal);
-
-
-  border: 1px solid var(--teal-dark);
-
-
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 600;
 }
-
-
-.plot-button:not(:disabled):active {
-
-
-  color: white;
-
-
-  background-color: var(--teal);
-
-
-}
-
-
+.plot-button:not(:disabled):hover { filter: brightness(1.08); background: var(--accent); }
+.plot-button:not(:disabled):active { background: var(--accent); color: var(--on-accent); }
 .plot-button:disabled {
-
-
-  color: var(--teal-light);
-
-
-  background-color: white;
-
-
+  background: var(--btn-bg);
+  color: var(--text);
+  border-color: var(--line);
+  font-weight: 400;
 }
+.plot-button--plotting { background: var(--plotting); border-color: var(--plotting); }
 
-
-.plot-button--plotting {
-
-
-  background-color: var(--teal-light);
-
-
-}
-
-
-
-
-
-.button-row {
-
-
-  display: flex;
-
-
-}
-
-
-.button-row > *:not(:first-child) {
-
-
-  margin-left: 10px;
-
-
-}
-
+.button-row { display: flex; gap: 6px; }
+.button-row > * { flex: 1 1 0; }
 
 /* 暂停回溯重绘控制条 */
 .rewind-controls {
   margin-top: 10px;
   padding: 10px;
-  border: 1px solid var(--canvas-stroke-rewind);
+  border: 1px solid var(--bad);
   border-radius: 6px;
-  background: rgba(229, 57, 53, 0.06);
+  background: rgba(224, 108, 117, 0.08);
 }
-
 /* 补画模式面板：橙色边框以区分暂停回溯面板 */
 .redraw-mode-controls {
-  border-color: var(--canvas-stroke-rewind-pending);
-  background: rgba(255, 152, 0, 0.08);
+  border-color: var(--warn);
+  background: rgba(227, 152, 32, 0.08);
 }
-
-.rewind-info {
-  font-size: 12px;
-  line-height: 1.5;
-  margin-bottom: 8px;
-}
-
-.rewind-slider-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.rewind-slider {
-  flex: 1;
-}
-
+.rewind-info { font-size: 12px; line-height: 1.5; margin-bottom: 8px; }
+.rewind-slider-row { display: flex; align-items: center; gap: 10px; }
+.rewind-slider { flex: 1; accent-color: var(--accent); }
 .rewind-slider-label {
   min-width: 64px;
   text-align: right;
   font-size: 12px;
-}
-
-
-
-
-
-.cancel-button {
-
-
-  background-color: white;
-
-
-  color: var(--purple-light);
-
-
-}
-
-
-.cancel-button--active {
-
-
-  color: var(--purple);
-
-
-}
-
-
-
-
-
-
-
-
-/* UTILS */
-
-
-
-
-
-.purple { color: var(--purple); }
-
-
-.teal { color: var(--teal); }
-
-
-.teal-dark { color: var(--teal-dark); }
-
-
-.red { color: var(--red); }
-
-
-
-
-
-.reg { font-weight: 400; }
-
-
-
-
-
-.flex {
-
-
-  display: flex;
-
-
-  justify-content: space-between;
-
-
-}
-
-
-
-
-
-.info {
-
-
-  text-align: center;
-
-
-}
-
-
-
-
-
-.info-disconnected {
-
-
-  text-align: center;
-
-
-  color: var(--red);
-
-
-}
-
-
-
-
-
-
-
-
-/* 楂樼骇璁剧疆 */
-
-
-
-
-
-.drive-params-result {
-
-
-  margin-top: 8px;
-
-
-  padding-top: 8px;
-
-
-  border-top: 1px solid var(--purple-light);
-
-
-}
-
-
-
-
-
-/* Override inline margin-left on hardware selector */
-.control-panel select {
-  margin-left: 0 !important;
-}
-
-/* Export SVG button */
-.export-svg-btn {
-  margin-top: 0.5rem;
-  font-size: 14px;
-}
-
-/* Replan button (disabled state) */
-.replan-button:disabled {
-  background-color: var(--purple-light);
-  color: var(--purple-dark);
-  cursor: default;
-}
-
-/* Clear SVG button (positioned in preview area) */
-.clear-svg-btn {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 10;
-  width: auto;
-  padding: 4px 12px;
-  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Progress bar */
-
-
-.progress-bar-wrap {
-
-
-  display: flex;
-
-
-  align-items: center;
-
-
-  gap: 8px;
-
-
-  margin-bottom: 8px;
-
-
-}
-
-
+.progress-bar-wrap { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .progress-bar {
-
-
   flex: 1;
-
-
-  height: 12px;
-
-
-  background: var(--purple-light);
-
-
-  border-radius: 6px;
-
-
+  height: 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
   overflow: hidden;
-
-
 }
-
-
 .progress-bar-fill {
-
-
   height: 100%;
-
-
-  background: var(--teal);
-
-
+  background: var(--accent);
   transition: width 0.3s ease;
-
-
-  border-radius: 6px;
-
-
 }
-
-
 .progress-bar-label {
-
-
   font-size: 12px;
-
-
-  font-weight: 700;
-
-
-  color: var(--purple-dark);
-
-
+  color: var(--dim);
   min-width: 36px;
-
-
   text-align: right;
-
-
+  font-variant-numeric: tabular-nums;
 }
 
-
-
-
-
-/* Plan statistics */
-
-
-.plan-stats {}
-
-
-
-/* ===== Dark theme (Trae-style pure neutral gray) ===== */
-[data-theme="dark"],
-[data-theme="dark"] body {
-  background-color: #1e1e1e;
-  color: #cccccc;
-  --panel-bg: #252526;
-  /* Canvas (preview) colors — dark variant */
-  --canvas-bg: #2a2a2a;
-  --canvas-stroke: rgba(255, 255, 255, 0.85);
-  --canvas-stroke-faded: rgba(255, 255, 255, 0.3);
-  --canvas-stroke-done: #6a6a6a;
-  --canvas-stroke-current: #4daafc;
-  --canvas-stroke-rewind: #ff6b63;
-  --canvas-stroke-rewind-pending: #ffa726;
-  --canvas-margin: #9d9d9d;
-  --canvas-grid5: #3a3a3a;
-  --canvas-grid10: #4a4a4a;
-  --canvas-ruler: #6a6a6a;
-  --canvas-ruler-text: #9d9d9d;
-  --canvas-progress: rgba(201, 112, 112, 0.9);
+.drive-params-result {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
 
-[data-theme="dark"] .root {
-  background-color: #1e1e1e;
+.export-svg-btn { margin-bottom: 6px; }
+.replan-button:disabled { opacity: 0.7; }
+
+/* ------------------------------------------------------------ preview pane */
+
+.preview-area {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  background: repeating-conic-gradient(var(--stage-a) 0% 25%, var(--stage-b) 0% 50%) 50% / 16px 16px;
 }
 
-[data-theme="dark"] .control-panel,
-[data-theme="dark"] .control-panel-bottom {
-  background-color: #252526;
+/* Floating actions over the preview: theme switch and 清除 SVG top-right.
+   pointer-events pass through the gaps so the stage below stays
+   interactive. */
+.floating-actions {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 6;
+  pointer-events: none;
+}
+.floating-actions > * { pointer-events: auto; }
+.floating-actions .spacer { flex: 1 1 auto; pointer-events: none; }
+.floating-actions .seg { background: var(--panel); }
+.floating-actions .clear-svg-btn {
+  width: auto;
+  margin-bottom: 0;
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
-[data-theme="dark"] .section-header {
-  border-bottom-color: #3c3c3c;
-  color: #e8e8e8;
+.preview {
+  box-shadow: 0 2px 18px #0008;
+  overflow: hidden;
+  background-color: var(--canvas-bg);
+  position: relative;
+}
+.preview > svg { display: block; contain: strict; }
+.preview > svg:not(:first-child) {
+  position: absolute;
+  transform: translateZ(0.001px);
+  top: 0;
+  left: 0;
 }
 
-[data-theme="dark"] .preview-area {
-  background-color: #1a1a1a;
+.preview-loader {
+  align-items: center;
+  background: var(--loader-bg);
+  color: var(--text);
+  display: flex;
+  font-size: 24px;
+  font-weight: 600;
+  height: 100%;
+  justify-content: center;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 100%;
+  z-index: 5;
 }
 
-[data-theme="dark"] .preview {
-  box-shadow: 3px 3px 15px rgba(0, 0, 0, 0.6);
+/* Drop overlay — dashed panel */
+.drag-target {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: var(--overlay);
+  z-index: 4;
+}
+.drag-target-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 16px;
+  padding: 28px 40px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+}
+.drag-target-message button {
+  width: auto;
+  margin: 0;
+  padding: 6px 24px;
+  font-size: 13px;
+}
+.dragover .drag-target-message {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
-[data-theme="dark"] input,
-[data-theme="dark"] select,
-[data-theme="dark"] button,
-[data-theme="dark"] textarea {
-  background-color: #2d2d2d;
-  color: #cccccc;
-  border-color: #3c3c3c;
-}
+/* ------------------------------------------------------------ plot panel
+   Statistics and plot controls live in a sidebar card pinned to the
+   bottom (margin-top: auto above), not in a separate footer strip. */
 
-[data-theme="dark"] input[type=checkbox] {
-  border-color: #3c3c3c;
-}
+.control-panel-bottom { margin-bottom: 0; }
+.plan-stats { font-size: 12px; color: var(--dim); margin-bottom: 8px; }
+.plan-stats strong, .duration strong { color: var(--text); font-weight: 600; }
 
-[data-theme="dark"] input[type=checkbox]:checked:after {
-  background-color: #cccccc;
-}
+/* Cancel buttons in the plot controls: quiet until they become the active action */
+.cancel-button { color: var(--dim); }
+.cancel-button--active { color: var(--bad); border-color: var(--bad); }
 
-[data-theme="dark"] button:not(:disabled):hover,
-[data-theme="dark"] button:not(:disabled):focus,
-[data-theme="dark"] select:not(:disabled):hover,
-[data-theme="dark"] select:focus,
-[data-theme="dark"] input[type=number]:hover,
-[data-theme="dark"] input[type=number]:focus,
-[data-theme="dark"] input[type=text]:hover,
-[data-theme="dark"] input[type=text]:focus,
-[data-theme="dark"] textarea:hover,
-[data-theme="dark"] textarea:focus,
-[data-theme="dark"] input[type=checkbox]:focus {
-  box-shadow: 1px 2px 5px rgba(0, 0, 0, 0.5);
-  border-color: #5a5a5a;
-}
+/* ------------------------------------------------------------ preview zoom/pan (v0.20) */
 
-[data-theme="dark"] button:not(:disabled):active {
-  background-color: #3a3a3a;
-  color: #e8e8e8;
-}
-
-/* Primary action button — light gray on dark */
-[data-theme="dark"] .plot-button {
-  background-color: #4a4a4a;
-  border-color: #5a5a5a;
-  color: #ffffff;
-}
-
-[data-theme="dark"] .plot-button:not(:disabled):active {
-  background-color: #5a5a5a;
-  color: #ffffff;
-}
-
-[data-theme="dark"] .plot-button:disabled {
-  color: #6a6a6a;
-  background-color: #2d2d2d;
-  border-color: #3c3c3c;
-}
-
-[data-theme="dark"] .plot-button--plotting {
-  background-color: #3a3a3a;
-}
-
-[data-theme="dark"] .cancel-button {
-  color: #6a6a6a;
-}
-
-[data-theme="dark"] .cancel-button--active {
-  color: #cccccc;
-}
-
-[data-theme="dark"] .progress-bar {
-  background-color: #3c3c3c;
-}
-
-[data-theme="dark"] .progress-bar-fill {
-  background-color: #9d9d9d;
-}
-
-[data-theme="dark"] .progress-bar-label {
-  color: #cccccc;
-}
-
-[data-theme="dark"] .bit2atom-title {
-  opacity: 0.9;
-}
-
-[data-theme="dark"] .drag-target {
-  background: rgba(0, 0, 0, 0.5);
-}
-
-[data-theme="dark"] .drag-target-message {
-  color: #cccccc;
-}
-
-[data-theme="dark"] body.dragover {
-  background-color: #3a3a3a;
-}
-
-[data-theme="dark"] .clear-svg-btn {
-  background-color: #2d2d2d;
-  color: #cccccc;
-  border-color: #3c3c3c;
-}
-
-[data-theme="dark"] .info {
-  color: #9d9d9d;
-}
-
-[data-theme="dark"] .info-disconnected {
-  color: #c97070;
-}
-
-[data-theme="dark"] label {
-  color: #9d9d9d;
-}
-
-[data-theme="dark"] .layer-select {
-  background-color: #2d2d2d;
-  color: #cccccc;
-  border-color: #3c3c3c;
-}
-
-[data-theme="dark"] .replan-button:disabled {
-  background-color: #2d2d2d;
-  color: #6a6a6a;
-  border-color: #3c3c3c;
-}
-
-[data-theme="dark"] .paper-sizes__swap {
-  fill: #9d9d9d;
-}
-
-[data-theme="dark"] .paper-sizes__swap:hover {
-  fill: #cccccc;
-}
-
-[data-theme="dark"] .drive-params-result {
-  border-top-color: #3c3c3c;
-}
-
-[data-theme="dark"] .horizontal-labels label::after {
-  border-right-color: #3c3c3c;
-}
-
-[data-theme="dark"] .horizontal-labels img {
-  border-right-color: #3c3c3c;
-}
-
-[data-theme="dark"] select[multiple]:focus option:checked {
-  background: #4a4a4a;
-  color: #ffffff;
-}
-
-[data-theme="dark"] path {
-  stroke: #cccccc;
-}
-
-[data-theme="dark"] .purple,
-[data-theme="dark"] .teal,
-[data-theme="dark"] .teal-dark {
-  color: #cccccc;
-}
-
-[data-theme="dark"] .red {
-  color: #c97070;
-}
-
-[data-theme="dark"] .reg {
-  font-weight: 400;
-}
-
-/* Scrollbar — dark theme */
-[data-theme="dark"] ::-webkit-scrollbar-thumb {
-  background: #4a4a4a;
-  background-clip: content-box;
-}
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
-  background: #5a5a5a;
-  background-clip: content-box;
-}
-[data-theme="dark"] * {
-  scrollbar-color: #4a4a4a transparent;
-}
-
-/* ===== 预览缩放/平移 ===== */
-/* 画布内文字（标尺刻度值等）禁止文本选择，避免拖拽平移时出现蓝色选区 */
+/* Ruler tick labels etc. must not become a text selection while panning */
 .preview-canvas,
 .preview-canvas text {
   user-select: none;
   -webkit-user-select: none;
 }
-/* 放大后可拖拽平移 */
-.preview-canvas.zoomed {
-  cursor: grab;
-}
-.preview-canvas.dragging {
-  cursor: grabbing;
-}
+.preview-canvas.zoomed { cursor: grab; }
+.preview-canvas.dragging { cursor: grabbing; }
 
-/* 预览缩放工具条（右上角悬浮） */
+/* Zoom toolbar — bottom-right of the paper (the stage's top-right belongs
+   to the floating theme/clear group) */
 .preview-toolbar {
   position: absolute;
-  top: 8px;
+  bottom: 8px;
   right: 8px;
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 2px 6px;
+  border: 1px solid var(--line);
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.45);
-  color: whitesmoke;
+  background: var(--panel);
+  color: var(--text);
   font-size: 12px;
   user-select: none;
   z-index: 10;
+  opacity: 0.94;
 }
-/* 图形超出设备工作范围时的警示条（预览底部居中） */
+.preview-toolbar button {
+  width: auto;
+  margin-bottom: 0;
+  border: none;
+  border-radius: 3px;
+  background: var(--btn-bg);
+  color: inherit;
+  padding: 1px 7px;
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: none;
+}
+.preview-toolbar button:not(:disabled):hover,
+.preview-toolbar button:not(:disabled):focus { background: var(--btn-hover); box-shadow: none; }
+.preview-toolbar span {
+  min-width: 38px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+
+/* Out-of-bounds warning bar (bottom center of the paper) */
 .preview-warning {
   position: absolute;
   bottom: 12px;
@@ -1865,48 +735,42 @@ summary:focus {
   max-width: calc(100% - 24px);
   padding: 4px 12px;
   border-radius: 4px;
-  background: rgba(244, 67, 54, 0.92);
+  background: var(--bad);
   color: #fff;
   font-size: 12px;
   user-select: none;
   pointer-events: none;
   z-index: 10;
 }
-/* 覆盖通用 button 的 width:100% / 边框样式 */
-.preview-toolbar button {
-  width: auto;
-  margin-bottom: 0;
-  border: none;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.12);
-  color: inherit;
-  padding: 1px 7px;
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 1.4;
-  box-shadow: none;
-}
-.preview-toolbar button:hover,
-.preview-toolbar button:focus {
-  background: rgba(255, 255, 255, 0.25);
-  box-shadow: none;
-}
-.preview-toolbar span {
-  min-width: 38px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
 
-[data-theme="dark"] .preview-toolbar {
-  background: rgba(60, 60, 60, 0.75);
-  color: #cccccc;
-}
-[data-theme="dark"] .preview-toolbar button {
-  background: rgba(255, 255, 255, 0.1);
-  color: inherit;
-}
-[data-theme="dark"] .preview-toolbar button:hover,
-[data-theme="dark"] .preview-toolbar button:focus {
-  background: rgba(255, 255, 255, 0.22);
-}
+/* ------------------------------------------------------------ utils */
 
+.purple { color: var(--text); }
+.teal { color: var(--accent); }
+.teal-dark { color: var(--accent); }
+.red { color: var(--bad); }
+.reg { font-weight: 400; }
+.info { font-size: 12px; color: var(--dim); }
+.info-disconnected { font-size: 12px; color: var(--bad); }
+
+/* ------------------------------------------------------------ narrow
+   Below this the sidebar leaves no stage worth looking at, so the two
+   panes stack instead of sitting side by side, and the whole page
+   scrolls. */
+@media (max-width: 860px) {
+  html, body, #app { height: auto; }
+  body { overflow: auto; }
+  .root { height: auto; flex-direction: column; }
+
+  /* Preview first: the drawing is what the app is. */
+  .preview-area { order: 0; height: 60vh; min-height: 240px; flex: 0 0 auto; }
+  .control-panel {
+    order: 1;
+    width: auto;
+    flex: 0 0 auto;
+    border-right: 0;
+    border-top: 1px solid var(--line);
+    overflow-y: visible;
+  }
+  .floating-actions { flex-wrap: wrap; }
+}
