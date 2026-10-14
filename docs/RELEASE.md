@@ -71,6 +71,15 @@ Remove-Item Env:\GH_TOKEN
 
 ## 发布记录
 
+### v0.21.0（2026-10-14）
+
+- **版本**：0.20.0 → 0.21.0（界面改版：深/浅双主题、预览纸色自定义、信息架构重组、折叠分区、矮视口裁切修复，升 minor）
+- **release.mjs 新坑（Kimi 智能体环境）**：该环境下 `node` 是垫片进程，`process.argv[0]` 为 `Kimi.exe` 而非 node 可执行文件名——yargs `hideBin` 据此判定为非 node 环境，只剥离一个参数，把脚本路径当位置参数报 `Unknown argument: …\tools\release.mjs`（git bash 与 cmd 下均复现）。修正：按 release.mjs 源码手动执行等效操作——改 `package.json`/`package-lock.json` 版本（顺手补齐此前漏更的 `packages[""].version`，0.19.0 → 0.21.0）、`git commit -m "bump to 0.21.0"`、`git tag -a`
+- **包结构**：git archive（tag 跟踪文件）+ dist/ 预构建产物，共 101 条目、1.39 MB（较 v0.20.0 +1 条目：新增 `scripts/dev-server.mjs` 预览脚本与 `npm run dev`）；Python zipfile 打包，0 反斜杠条目
+- **验证**：发布前 lint 无新增警告、53 测试通过；打包后校验 zip 条目正斜杠、CHANGELOG/README/package.json/dist 齐全；`dist/ui/ui.js` 确认注入 `0.21.0` 版本号（版本号须先 bump 再构建，否则界面品牌区显示旧版本）
+- **产物**：tag `v0.21.0`、Release 附件 `bit2atombot-0.21.0-src.zip`，`gh release view` 确认说明与附件（1,456,015 字节）正常
+- **凭据**：`GH_TOKEN` 经 node `spawnSync` 的 `input` 选项喂 `git credential fill` 获取（v0.19.0 记录的方案），用完即清
+
 ### v0.20.0（2026-09-08）
 
 - **版本**：0.19.0 → 0.20.0（缩放三态/SVG 尺寸检测/防撞轴收尾 + 裁剪误删与加载卡死修复，升 minor），`node tools/release.mjs --level minor`

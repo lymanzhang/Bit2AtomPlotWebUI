@@ -7,6 +7,8 @@
 
 ## [0.21.0] - 2026-10-14
 
+> 已发布至 [GitHub Releases](https://github.com/lymanzhang/Bit2AtomPlotWebUI/releases/tag/v0.21.0)（tag `v0.21.0`，附件 `bit2atombot-0.21.0-src.zip`）。发布流程与注意事项见 [docs/RELEASE.md](docs/RELEASE.md)。
+
 ### Added
 
 - **深色/浅色双主题切换**：预览区右上角悬浮式分段控件，按绘制纸张明暗选择主题（浅色主题配白纸深色笔，深色主题配深色纸浅色笔）；选择持久化保存，默认深色。全部界面颜色改为 CSS 变量驱动，两套主题共享同一套设计令牌（长春花蓝强调色、统一圆角与间距）
