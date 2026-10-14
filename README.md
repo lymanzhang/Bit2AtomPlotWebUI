@@ -8,7 +8,7 @@
 
 Bit2AtomBot 是一款专为 **AxiDraw 系列笔式绘图仪**设计的现代化 Web 控制端。它提供了更直观的操作界面、更丰富的硬件适配能力和更流畅的用户体验。
 
-![Bit2AtomBot 控制界面](./docs/image-20260624231750551.png)
+![Bit2AtomBot 控制界面（v0.21.0）](./docs/image-20261014212445.png)
 
 <details>
 <summary>旧版界面</summary>
